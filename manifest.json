@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "nixfred.ram-pulse",
+  "name": "RAM Pulse",
+  "version": "1.0.0",
+  "author": "Fred Nix",
+  "license": "MIT",
+  "description": "A living memory chip: continuous history, RAM pressure, swap and zram insight, and focus-only RAM hoarders.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {"barWidget": "Panel.qml"},
+  "barWidget": {
+    "displayName": "RAM Pulse",
+    "description": "Animated RAM, swap, pressure and persistent seven-day history. Right-click to choose a readout.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
