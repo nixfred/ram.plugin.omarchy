@@ -29,6 +29,7 @@ Panel {
     readonly property var rows: mem.hoarders || []
     readonly property var groups: mem.groups || []
     readonly property bool grouped: setting('groupByApp',true) !== false
+    readonly property bool showReadout: setting('showReadout',true) !== false
     readonly property var listing: grouped ? groups : rows
     readonly property var chart: histories[String(range)] || {points:[],seconds:range,now:now,bucket:15,count:0,peak:0}
     readonly property string health: stale ? 'WAITING FOR TELEMETRY' : pressure >= 10 ? 'MEMORY IS STALLING' : mem.availablePct < 20 ? 'LOW HEADROOM' : 'ROOM TO BREATHE'
@@ -95,6 +96,7 @@ Panel {
             id:barRow;anchors.centerIn:parent;spacing:4
             MemoryChip {compact:true;available:root.mem.availablePct || 0;tint:root.tint;animate:!root.stale && root.setting('animated',true)}
             Column {
+                visible:root.showReadout
                 anchors.verticalCenter:parent.verticalCenter
                 Text {text:root.stale?'—':Model.readout(root.mem,root.mode);color:root.barForeground;font.family:Style.font.family;font.pixelSize:12;font.bold:true}
                 Text {text:root.mode===1||root.mode===2?'USED':'AVAILABLE';color:root.tint;font.pixelSize:7;font.letterSpacing:0.8}
