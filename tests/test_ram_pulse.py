@@ -10,6 +10,16 @@ ram = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ram)
 
 class MemoryTests(unittest.TestCase):
+    def test_state_directory_defaults_for_unset_or_empty_xdg_state_home(self):
+        home = Path('/example/home')
+        default = home / '.local/state/ram-pulse'
+        for env, expected in [({}, default), ({'XDG_STATE_HOME': ''}, default),
+                              ({'XDG_STATE_HOME': '/example/state'}, Path('/example/state/ram-pulse'))]:
+            with self.subTest(env=env), patch.dict(ram.os.environ, env, clear=True), patch.object(Path, 'home', return_value=home):
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                self.assertEqual(module.STATE, expected)
+
     def test_memavailable_not_memfree_defines_usage(self):
         original = ram.read
         raw = 'MemTotal: 1000 kB\nMemAvailable: 400 kB\nMemFree: 20 kB\nCached: 300 kB\nSReclaimable: 100 kB\nShmem: 50 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n'
