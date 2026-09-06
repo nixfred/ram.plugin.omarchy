@@ -1,7 +1,8 @@
 # Per-app grouping for the RAM hoarders view
 
-Status: proposal, not implemented. Measured on `dex` (31 GiB, 369 processes,
-122 owned by the user) on 6 September 2026.
+Status: implemented. Measured on `dex` (31 GiB, 369 processes, 122 owned by the
+user) on 6 September 2026. The design below is what shipped; two things the
+proposal did not anticipate are recorded under "What the build changed".
 
 ## What is wrong today
 
@@ -135,11 +136,43 @@ In `Panel.qml`:
   changes when grouped: summed PSS may be added together, which is the whole
   point of the change.
 
-## Open question for the author
+## What the build changed
 
-Grouping by window means an application with two windows shows as two rows.
-For Brave that is probably right — two windows are two things to click. For a
-single application spread over many windows it may not be. The alternative is
-to group by cgroup scope first and fall back to the window, which merges
-windows of one launch but splits differently-launched instances of one app.
-Both are defensible; this needs a decision before implementation.
+Two things only showed up against the live process table.
+
+**A session unit is not an application.** The cgroup fallback works for
+`voxtype.service`, which is one program and its OSD helper. It fails badly for
+`wayland-wm@hyprland.desktop.service`, the compositor's own unit, which holds
+the shell, Hyprland, Xwayland, two `ssh` clients, clipboard watchers and every
+helper launched without its own scope — 23 processes, which the view would have
+labelled "quickshell" after its largest member. A cgroup running more than five
+distinct programs is now treated as a session and its members stay individual.
+The threshold is a judgement call and may need tuning; a browser scope runs two
+or three distinct programs, so there is room under it.
+
+**A process that exits mid-scan must not cost its group a total.** The status
+read and the `smaps_rollup` read are milliseconds apart, and short-lived helpers
+die in between. Nulling the group's PSS for those made three of the top five
+groups fall back to "resident" for no real reason. A member whose PSS cannot be
+read and whose `/proc` entry is gone is now dropped from the scan. A member that
+is merely unreadable — a `sudo` or `pacman` running as root inside one of our own
+terminals — still counts and still spoils the sum, which is correct: that group
+really does have memory nobody can measure from here.
+
+## Measured cost as built
+
+Median of five full passes, warm: **206 ms before, 213 ms after**. The +45 ms
+predicted for full-fleet PSS did not materialise, because the processes that
+dominate the smaps cost are the large ones the top-24 read was already paying
+for. The dominant cost in both is `target_for`, which shells out.
+
+## The question that was open, and how it was answered
+
+Grouping by window means an application with two windows shows as two rows. The
+alternative was to key on the cgroup scope first, merging one launch's windows
+but splitting differently-launched instances of one app. The window key was
+chosen: every row in this view exists to be clicked, and clicking focuses a
+window, so one row per focusable window is the grouping that matches the
+action. The live result reads correctly — Brave's 16 processes as one 1.3 GiB
+row against its window, each terminal's agent, shell and helpers as one row
+against that terminal.

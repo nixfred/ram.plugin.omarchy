@@ -41,6 +41,86 @@ class MemoryTests(unittest.TestCase):
         self.assertIsNone(ram.window_for(5,{5:{'ppid':6},6:{'ppid':5}},{}))
         self.assertEqual(ram.window_for(5,{5:{'ppid':6}},{6:{'address':'0xabc'}})['address'],'0xabc')
 
+    def test_cgroup_only_groups_on_a_unit_leaf(self):
+        for raw, expect in [('0::/user.slice/app-brave-1.scope', 'app-brave-1.scope'),
+                            ('0::/user.slice/voxtype.service', 'voxtype.service'),
+                            ('0::/user.slice/user-1000.slice', ''),
+                            ('0::/', ''), ('', '')]:
+            with patch.object(ram, 'read', return_value=raw):
+                self.assertEqual(ram.cgroup_scope(9), expect)
+
+    def test_group_key_prefers_the_window_then_the_scope_then_the_process(self):
+        procs = {5: {'pid': 5, 'ppid': 9}, 9: {'pid': 9, 'ppid': 1}}
+        windows = {9: {'address': '0xabc'}}
+        self.assertEqual(ram.group_of(procs[5], procs, windows), 'window:0xabc')
+        with patch.object(ram, 'read', return_value='0::/user.slice/voxtype.service'):
+            self.assertEqual(ram.group_of(procs[5], procs, {}), 'scope:voxtype.service')
+        with patch.object(ram, 'read', return_value='0::/'):
+            self.assertEqual(ram.group_of(procs[5], procs, {}), 'pid:5')
+
+    def test_a_process_that_exited_mid_scan_is_dropped_not_counted(self):
+        import os
+        gone = {'pid': 99999999, 'owned': True, 'pss': None}
+        here = {'pid': os.getpid(), 'owned': True, 'pss': None}
+        self.assertFalse(ram.scanned(gone))
+        # Unreadable but still running: a root command in our own terminal.
+        self.assertTrue(ram.scanned(here))
+        self.assertTrue(ram.scanned({'pid': 99999999, 'owned': False, 'pss': None}))
+        self.assertTrue(ram.scanned({'pid': 99999999, 'owned': True, 'pss': 10}))
+
+    def _member(self, pid, rss, pss, name='brave', swap=0):
+        return {'pid': pid, 'ppid': 1, 'start': str(pid), 'name': name,
+                'rss': rss, 'swap': swap, 'pss': pss, 'owned': True}
+
+    def _under_window(self, *pids):
+        procs = {n: {'pid': n, 'ppid': 9} for n in pids}
+        procs[9] = {'pid': 9, 'ppid': 1}
+        return procs, {9: {'address': '0xabc'}}
+
+    def test_group_sums_pss_and_never_sums_rss(self):
+        procs, windows = self._under_window(11, 12)
+        live = [self._member(11, 500, 400, swap=7), self._member(12, 300, 90, swap=3)]
+        g = ram.families(live, procs, windows)[0]
+        self.assertEqual(g['pss'], 490)
+        self.assertEqual(g['swap'], 10)
+        # The largest single resident process, not 800.
+        self.assertEqual(g['rss'], 500)
+        self.assertEqual(g['count'], 2)
+        self.assertEqual(g['pid'], 11)
+
+    def test_group_with_an_unreadable_member_has_no_total(self):
+        procs, windows = self._under_window(11, 12)
+        live = [self._member(11, 500, 400), self._member(12, 300, None)]
+        g = ram.families(live, procs, windows)[0]
+        self.assertIsNone(g['pss'])
+        self.assertEqual(g['count'], 2)
+
+    def test_incomplete_group_ranks_on_resident_not_ahead_of_a_real_total(self):
+        procs = {11: {'pid': 11, 'ppid': 0}, 12: {'pid': 12, 'ppid': 0}}
+        live = [self._member(11, 100, 100, name='small'), self._member(12, 90, None, name='opaque')]
+        with patch.object(ram, 'read', return_value='0::/'):
+            names = [g['name'] for g in ram.families(live, procs, {})]
+        self.assertEqual(names, ['small', 'opaque'])
+
+    def test_a_session_wide_cgroup_is_not_an_app(self):
+        procs = {n: {'pid': n, 'ppid': 0} for n in range(11, 18)}
+        live = [self._member(n, 100*n, 10*n, name='prog%d' % n) for n in range(11, 18)]
+        with patch.object(ram, 'read', return_value='0::/user.slice/wayland-wm@hyprland.desktop.service'):
+            groups = ram.families(live, procs, {})
+        self.assertEqual([g['count'] for g in groups], [1]*7)
+        # Five distinct programs is still one application.
+        with patch.object(ram, 'read', return_value='0::/user.slice/app-x.scope'):
+            groups = ram.families(live[:5], procs, {})
+        self.assertEqual([g['count'] for g in groups], [5])
+
+    def test_group_names_are_distinct_and_capped(self):
+        procs, windows = self._under_window(11, 12, 13, 14, 15)
+        names = ['brave', 'brave', 'foot', 'bash', 'tail']
+        live = [self._member(11+i, 100-i, 1, name=names[i]) for i in range(5)]
+        g = ram.families(live, procs, windows)[0]
+        self.assertEqual(g['count'], 5)
+        self.assertEqual(g['names'], ['brave', 'foot', 'bash'])
+
     def test_environment_allowlist(self):
         with patch.object(ram,'read',return_value='TOKEN=secret\0HERDR_PANE_ID=w1:p2\0PASSWORD=secret\0'):
             self.assertEqual(ram.environment(1),{'HERDR_PANE_ID':'w1:p2'})

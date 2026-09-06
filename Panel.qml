@@ -27,10 +27,23 @@ Panel {
     readonly property color tint: stale ? '#71838c' : Model.ramp(mem.availablePct)
     readonly property real pressure: mem.psi && mem.psi.some ? mem.psi.some.avg10 : 0
     readonly property var rows: mem.hoarders || []
+    readonly property var groups: mem.groups || []
+    readonly property bool grouped: setting('groupByApp',true) !== false
+    readonly property var listing: grouped ? groups : rows
     readonly property var chart: histories[String(range)] || {points:[],seconds:range,now:now,bucket:15,count:0,peak:0}
     readonly property string health: stale ? 'WAITING FOR TELEMETRY' : pressure >= 10 ? 'MEMORY IS STALLING' : mem.availablePct < 20 ? 'LOW HEADROOM' : 'ROOM TO BREATHE'
     readonly property real openPanelIndicatorWidth: button.width-12
 
+    // A group total is only ever the sum of its members' proportional RAM. When
+    // any member's Pss could not be read the collector sends null, and the row
+    // falls back to the largest resident process rather than inventing a total.
+    function totalOf(row) { return row && row.count > 1 && row.pss !== null && row.pss !== undefined ? row.pss : row.rss }
+    function kindOf(row) { return row && row.count > 1 && row.pss !== null && row.pss !== undefined ? 'proportional' : 'resident' }
+    function setGrouped(value) {
+        root.page=0
+        root.settings=Object.assign({}, root.settings, {groupByApp:!!value})
+        if(root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName,root.settings)
+    }
     function setMode(value) {
         root.settings=Object.assign({}, root.settings, {displayMode:Model.clamp(value,0,3)})
         if(root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName,root.settings)
@@ -42,7 +55,7 @@ Panel {
         actionProc.running=true
     }
     function status() {
-        return JSON.stringify({opened:opened,mode:mode,readout:Model.readout(mem,mode),tint:String(tint),stale:stale,samples:chart.count || 0,tab:tab,chooseMode:chooseMode,total:mem.total,available:mem.available,hoarders:rows.length,action:actionStatus})
+        return JSON.stringify({opened:opened,mode:mode,readout:Model.readout(mem,mode),tint:String(tint),stale:stale,samples:chart.count || 0,tab:tab,chooseMode:chooseMode,total:mem.total,available:mem.available,hoarders:rows.length,groups:groups.length,grouped:grouped,action:actionStatus})
     }
     onOpenedChanged: if(opened) { snapshotFile.reload(); historyFile.reload() }
     FileView {
@@ -71,6 +84,7 @@ Panel {
         function display(value:int):void {root.setMode(value)}
         function showTab(value:int):void {root.tab=Model.clamp(value,0,2);root.chooseMode=false;root.open()}
         function historyRange(value:int):void {if([3600,86400,604800].indexOf(value)>=0)root.range=value}
+        function grouping(value:bool):void {root.setGrouped(value)}
     }
     WidgetButton {
         id:button; anchors.fill:parent;bar:root.bar;labelVisible:false;hasVisualContent:true
@@ -223,41 +237,43 @@ Panel {
                 }
                 Column {
                     width:parent.width;spacing:10;visible:root.tab===1;height:visible?implicitHeight:0
-                    Row{width:parent.width
-                        Heading{text:'TOP RAM HOARDERS';width:parent.width-210;font.pixelSize:13}
-                        Label{text:'Ranked by resident RAM · refresh 9s';font.pixelSize:10}
+                    Row{width:parent.width;spacing:8
+                        Heading{text:'TOP RAM HOARDERS';width:parent.width-300;font.pixelSize:13;anchors.verticalCenter:parent.verticalCenter}
+                        Action{text:'By app';selected:root.grouped;implicitWidth:76;implicitHeight:28;onClicked:root.setGrouped(true)}
+                        Action{text:'By process';selected:!root.grouped;implicitWidth:98;implicitHeight:28;onClicked:root.setGrouped(false)}
+                        Label{text:'refresh 9s';font.pixelSize:10;anchors.verticalCenter:parent.verticalCenter}
                     }
-                    Label{text:'Click a row to visit its app or attached session. Background processes show details.';font.pixelSize:11}
+                    Label{text:root.grouped?'One row per window or service. Click a row to visit it. Ranked by proportional RAM.':'One row per process, ranked by resident RAM. Click a row to visit its app or attached session.';font.pixelSize:11}
                     Repeater {
-                        model:root.rows.slice(root.page*8,root.page*8+8)
+                        model:root.listing.slice(root.page*8,root.page*8+8)
                         Rectangle {
                             id:procRow
                             required property var modelData
                             required property int index
                             width:mainColumn.width;height:65;radius:10
                             color:hoarderMouse.containsMouse?'#1d303b':'#111e28';border.color:hoarderMouse.containsMouse?root.tint:'#263844'
-                            Rectangle{anchors.left:parent.left;anchors.bottom:parent.bottom;anchors.leftMargin:12;anchors.bottomMargin:5;width:(parent.width-24)*Model.clamp(procRow.modelData.rss/(root.mem.total||1),0,1);height:2;radius:1;color:root.tint}
+                            Rectangle{anchors.left:parent.left;anchors.bottom:parent.bottom;anchors.leftMargin:12;anchors.bottomMargin:5;width:(parent.width-24)*Model.clamp(root.totalOf(procRow.modelData)/(root.mem.total||1),0,1);height:2;radius:1;color:root.tint}
                             Label{x:12;y:22;text:String(root.page*8+procRow.index+1).padStart(2,'0');font.pixelSize:12;color:root.tint}
                             Column{x:44;y:10;spacing:5;width:parent.width-222
-                                Heading{text:procRow.modelData.name+'  ·  '+procRow.modelData.pid;font.pixelSize:13;width:parent.width;elide:Text.ElideRight}
-                                Label{text:procRow.modelData.target.address?(procRow.modelData.target.host.kind==='herdr'?'Herdr '+procRow.modelData.target.host.pane+' · ':procRow.modelData.target.host.kind==='tmux'?'tmux '+procRow.modelData.target.host.pane+' · ':'')+procRow.modelData.target.title:'Background process · no attached window';width:parent.width;elide:Text.ElideRight;font.pixelSize:10}
+                                Heading{text:procRow.modelData.name+'  ·  '+(procRow.modelData.count>1?procRow.modelData.count+' processes':procRow.modelData.pid);font.pixelSize:13;width:parent.width;elide:Text.ElideRight}
+                                Label{text:procRow.modelData.target.address?(procRow.modelData.target.host.kind==='herdr'?'Herdr '+procRow.modelData.target.host.pane+' · ':procRow.modelData.target.host.kind==='tmux'?'tmux '+procRow.modelData.target.host.pane+' · ':'')+procRow.modelData.target.title:procRow.modelData.count>1?procRow.modelData.names.join(', ')+' · no attached window':'Background process · no attached window';width:parent.width;elide:Text.ElideRight;font.pixelSize:10}
                             }
                             Column{anchors.right:parent.right;anchors.rightMargin:35;y:10;spacing:5
-                                Heading{text:Model.size(procRow.modelData.rss);font.pixelSize:15;anchors.right:parent.right}
-                                Label{text:'swap '+Model.size(procRow.modelData.swap);font.pixelSize:10;anchors.right:parent.right}
+                                Heading{text:Model.size(root.totalOf(procRow.modelData));font.pixelSize:15;anchors.right:parent.right}
+                                Label{text:root.kindOf(procRow.modelData)+'  ·  swap '+Model.size(procRow.modelData.swap);font.pixelSize:10;anchors.right:parent.right}
                             }
                             Label{anchors.right:parent.right;anchors.rightMargin:13;y:22;text:procRow.modelData.target.address?'↗':'ⓘ';color:root.tint;font.pixelSize:16}
                             MouseArea{id:hoarderMouse;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
-                                onClicked: {if(procRow.modelData.target.address)root.runAction('focus',procRow.modelData);else root.actionStatus=procRow.modelData.name+' · PID '+procRow.modelData.pid+' · proportional RAM '+(procRow.modelData.pss===null?'unavailable':Model.size(procRow.modelData.pss))+'. No existing window to focus.'}
+                                onClicked: {if(procRow.modelData.target.address)root.runAction('focus',procRow.modelData);else root.actionStatus=procRow.modelData.name+' · '+(procRow.modelData.count>1?procRow.modelData.count+' processes':'PID '+procRow.modelData.pid)+' · proportional RAM '+(procRow.modelData.pss===null||procRow.modelData.pss===undefined?'unavailable, a member could not be read':Model.size(procRow.modelData.pss))+'. No existing window to focus.'}
                             }
                         }
                     }
                     Row{spacing:10
                         Action{text:'← Previous';opacity:root.page>0?1:0.4;onClicked:root.page=Math.max(0,root.page-1)}
-                        Label{text:(root.page+1)+' / '+Math.max(1,Math.ceil(root.rows.length/8));anchors.verticalCenter:parent.verticalCenter}
-                        Action{text:'Next →';opacity:(root.page+1)*8<root.rows.length?1:0.4;onClicked:root.page=Math.min(Math.max(0,Math.ceil(root.rows.length/8)-1),root.page+1)}
+                        Label{text:(root.page+1)+' / '+Math.max(1,Math.ceil(root.listing.length/8));anchors.verticalCenter:parent.verticalCenter}
+                        Action{text:'Next →';opacity:(root.page+1)*8<root.listing.length?1:0.4;onClicked:root.page=Math.min(Math.max(0,Math.ceil(root.listing.length/8)-1),root.page+1)}
                     }
-                    Label{width:parent.width;wrapMode:Text.WordWrap;text:'RSS includes shared pages, so process totals must not be added together. Swap is per-process anonymous swap; shared swap may be omitted. Browser subprocesses lead to their browser window.';font.pixelSize:10}
+                    Label{width:parent.width;wrapMode:Text.WordWrap;text:root.grouped?'A group total is proportional RAM: every shared page is divided between the processes mapping it, so these totals may be added together. A group whose members cannot all be read shows its largest resident process instead, marked resident. Windows group with the processes behind them; a service groups with its own helpers.':'RSS includes shared pages, so process totals must not be added together. Swap is per-process anonymous swap; shared swap may be omitted. Browser subprocesses lead to their browser window.';font.pixelSize:10}
                 }
                 Column {
                     width:parent.width;spacing:12;visible:root.tab===2;height:visible?implicitHeight:0

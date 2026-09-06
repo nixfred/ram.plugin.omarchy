@@ -110,6 +110,66 @@ def target_for(p, procs, wins):
                     break
     return {'address': w['address'], 'title': str(w.get('title', ''))[:100], 'workspace': str(w.get('workspace', {}).get('name', '')), 'host': host} if w else {}
 
+def scanned(p):
+    # Processes come and go while the scan runs. One that exited between its
+    # status and its smaps read is not a hoarder and must not cost its group a
+    # total. One that is merely unreadable, such as a root command inside our
+    # own terminal, is still resident and still spoils the sum.
+    return p['pss'] is not None or not p['owned'] or Path(f"/proc/{p['pid']}").exists()
+
+def cgroup_scope(pid):
+    # Only a unit leaf may group processes. The root cgroup and the slices
+    # above it cover unrelated work, so anything else falls back to the
+    # process itself rather than lumping the session into one row.
+    leaf = read(f'/proc/{pid}/cgroup').strip().rsplit('/', 1)[-1]
+    return leaf if leaf.endswith(('.scope', '.service')) else ''
+
+def group_of(p, procs, windows):
+    # One row per thing the user can click. window_for only walks the parent
+    # chain against processes already read, so it is cheap enough to run for
+    # every process; target_for is not, and runs once per displayed leader.
+    w = window_for(p['pid'], procs, windows)
+    if w:
+        return 'window:' + w['address']
+    scope = cgroup_scope(p['pid'])
+    return 'scope:' + scope if scope else f"pid:{p['pid']}"
+
+# A cgroup running more distinct programs than this is a desktop session, not
+# an application. The compositor's own unit holds the shell, Xwayland, ssh,
+# clipboard watchers and every helper launched without its own scope; calling
+# that one app, named after whichever member is largest, would be a lie.
+SESSION_PROGRAMS = 5
+
+def families(live, procs, windows):
+    groups = {}
+    for p in live:
+        groups.setdefault(group_of(p, procs, windows), []).append(p)
+    for key, members in list(groups.items()):
+        if key.startswith('scope:') and len({m['name'] for m in members}) > SESSION_PROGRAMS:
+            del groups[key]
+            for m in members:
+                groups[f"pid:{m['pid']}"] = [m]
+    rows = []
+    for members in groups.values():
+        members.sort(key=lambda p: p['rss'], reverse=True)
+        lead = members[0]
+        # Resident sizes count shared pages once per process and must never be
+        # added. Only a group whose every member reports Pss has a total.
+        partial = any(m['pss'] is None for m in members)
+        names = []
+        for m in members:
+            if m['name'] not in names:
+                names.append(m['name'])
+        rows.append({'pid': lead['pid'], 'start': lead['start'], 'name': lead['name'],
+                     'rss': lead['rss'], 'swap': sum(m['swap'] for m in members),
+                     'pss': None if partial else sum(m['pss'] for m in members),
+                     'owned': lead['owned'], 'count': len(members), 'names': names[:3]})
+    # A complete group ranks on its summed proportional RAM. One with an
+    # unreadable member has no honest total, so it ranks on its largest
+    # resident process, which is what the flat list would have shown anyway.
+    rows.sort(key=lambda g: g['pss'] if g['pss'] is not None else g['rss'], reverse=True)
+    return rows[:24]
+
 def hoarders():
     procs = {}
     for entry in Path('/proc').iterdir():
@@ -118,15 +178,32 @@ def hoarders():
             if p:
                 procs[p['pid']] = p
     wins = clients()
-    rows = sorted((p for p in procs.values() if p['rss'] > 0), key=lambda p: p['rss'], reverse=True)[:24]
-    for p in rows:
+    windows = {c['pid']: c for c in wins}
+    live = [p for p in procs.values() if p['rss'] > 0]
+    for p in live:
         try:
             p['owned'] = Path(f"/proc/{p['pid']}").stat().st_uid == os.getuid()
         except OSError:
             p['owned'] = False
-        p['target'] = target_for(p, procs, wins) if p['owned'] else {}
-        p['pss'] = fields(read(f"/proc/{p['pid']}/smaps_rollup")).get('Pss')
-    return rows
+        # Proportional RAM is the only figure a group may sum, so it is read
+        # for every process we own, not just the ones the flat list shows.
+        # Measured on a 369-process session: 140ms against 96ms for the top 24.
+        p['pss'] = fields(read(f"/proc/{p['pid']}/smaps_rollup")).get('Pss') if p['owned'] else None
+    live = [p for p in live if scanned(p)]
+
+    resolved = {}
+    def target(p):
+        if p['pid'] not in resolved:
+            resolved[p['pid']] = target_for(p, procs, wins) if p['owned'] else {}
+        return resolved[p['pid']]
+
+    rows = sorted(live, key=lambda p: p['rss'], reverse=True)[:24]
+    groups = families(live, procs, windows)
+    for p in rows:
+        p['target'] = target(p)
+    for g in groups:
+        g['target'] = target(procs[g['pid']])
+    return rows, groups
 
 def metrics(previous=None):
     m = fields(read('/proc/meminfo'))
@@ -198,7 +275,7 @@ def daemon():
         db = db_open()
         previous = None
         last_history = last_procs = 0
-        rows = []
+        rows, groups = [], []
         while True:
             start = time.monotonic()
             try:
@@ -208,9 +285,10 @@ def daemon():
                     atomic('history.json', {str(s): history(db, s, m['ts']) for s in (3600, 86400, 604800)})
                     last_history = start
                 if start-last_procs >= 9:
-                    rows = hoarders()
+                    rows, groups = hoarders()
                     last_procs = start
                 m['hoarders'] = rows
+                m['groups'] = groups
                 atomic('snapshot.json', m)
                 previous = m
             except (OSError, sqlite3.Error, RuntimeError, ValueError) as e:
