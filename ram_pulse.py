@@ -8,7 +8,9 @@ from pathlib import Path
 import re
 import socket
 import sqlite3
+import stat
 import subprocess
+import tempfile
 import time
 
 STATE = Path(os.environ.get('XDG_STATE_HOME') or str(Path.home() / '.local/state')) / 'ram-pulse'
@@ -242,6 +244,34 @@ def metrics(previous=None):
             'psi': psi, 'rates': rates, 'vm': vm, 'swaps': swaps, 'zram': zram,
             'pageSize': os.sysconf('SC_PAGE_SIZE'), 'details': m}
 
+def prepare_state():
+    # The README promises a 0700 directory of 0600 files. mkdir's mode applies
+    # only when it creates the directory, so an existing state directory, or a
+    # file left behind by an older release, keeps whatever mode it already had.
+    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory = os.open(STATE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        if os.fstat(directory).st_uid != os.getuid():
+            raise RuntimeError('RAM Pulse state directory is not owned by this user.')
+        os.fchmod(directory, 0o700)
+        for name in ('snapshot.json', 'history.json', 'history.sqlite3', 'history.sqlite3-wal',
+                     'history.sqlite3-shm', 'history.sqlite3-journal', 'collector.lock',
+                     'flush.lock', 'last-flush'):
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             dir_fd=directory)
+            except FileNotFoundError:
+                continue
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+                    raise RuntimeError('Unsafe RAM Pulse state file: ' + name)
+                os.fchmod(fd, 0o600)
+            finally:
+                os.close(fd)
+    finally:
+        os.close(directory)
+
 def db_open():
     db = sqlite3.connect(STATE / 'history.sqlite3', timeout=5)
     db.execute('PRAGMA journal_mode=WAL')
@@ -261,10 +291,18 @@ def history(db, seconds, now=None):
     return {'seconds': seconds, 'bucket': bucket, 'now': now, 'points': rows, 'count': sum(r[5] for r in rows), 'peak': max((r[2] for r in rows), default=0)}
 
 def atomic(name, value):
+    # A fixed .tmp name inherits whatever mode a previous interrupted write
+    # left on it; mkstemp always creates a fresh owner-only file.
     path = STATE / name
-    tmp = path.with_suffix('.tmp')
-    tmp.write_text(json.dumps(value, separators=(',', ':'), ensure_ascii=True))
-    tmp.replace(path)
+    payload = json.dumps(value, separators=(',', ':'), ensure_ascii=True, allow_nan=False)
+    fd, filename = tempfile.mkstemp(prefix='.' + name + '.', suffix='.tmp', dir=STATE)
+    tmp = Path(filename)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            stream.write(payload)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 def daemon():
     with (STATE / 'collector.lock').open('w') as lock:
@@ -369,8 +407,8 @@ def main():
     parser.add_argument('start', nargs='?')
     args = parser.parse_args()
     os.umask(0o077)
-    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
+        prepare_state()
         if args.action == 'daemon':
             daemon()
             return
