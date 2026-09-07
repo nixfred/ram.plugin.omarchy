@@ -243,10 +243,14 @@ def metrics(previous=None):
             'pageSize': os.sysconf('SC_PAGE_SIZE'), 'details': m}
 
 def db_open():
-    db = sqlite3.connect(STATE / 'history.sqlite3', timeout=5)
-    db.execute('PRAGMA journal_mode=WAL')
-    db.execute('CREATE TABLE IF NOT EXISTS samples (ts REAL PRIMARY KEY, used REAL, swap REAL, psi REAL, total INTEGER, boot TEXT)')
-    return db
+    db = sqlite3.connect(STATE / 'history.sqlite3', timeout=1)
+    try:
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute('CREATE TABLE IF NOT EXISTS samples (ts REAL PRIMARY KEY, used REAL, swap REAL, psi REAL, total INTEGER, boot TEXT)')
+        return db
+    except BaseException:
+        db.close()
+        raise
 
 def record(db, m):
     db.execute('INSERT OR REPLACE INTO samples VALUES (?,?,?,?,?,?)', (m['ts'], m['usedPct'], 100*m['swapUsed']/m['swapTotal'] if m['swapTotal'] else 0, m['psi'].get('some', {}).get('avg10', 0), m['total'], read('/proc/sys/kernel/random/boot_id').strip()))
@@ -272,28 +276,50 @@ def daemon():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        db = db_open()
+        db = None
         previous = None
         last_history = last_procs = 0
         rows, groups = [], []
-        while True:
-            start = time.monotonic()
-            try:
-                m = metrics(previous)
-                if start-last_history >= 15:
-                    record(db, m)
-                    atomic('history.json', {str(s): history(db, s, m['ts']) for s in (3600, 86400, 604800)})
-                    last_history = start
-                if start-last_procs >= 9:
-                    rows, groups = hoarders()
-                    last_procs = start
-                m['hoarders'] = rows
-                m['groups'] = groups
-                atomic('snapshot.json', m)
-                previous = m
-            except (OSError, sqlite3.Error, RuntimeError, ValueError) as e:
-                print(f'RAM Pulse: {type(e).__name__}: {e}', flush=True)
-            time.sleep(max(0.2, 3-(time.monotonic()-start)))
+        errors = {}
+        try:
+            while True:
+                start = time.monotonic()
+                try:
+                    m = metrics(previous)
+                    if start-last_history >= 15:
+                        last_history = start
+                        try:
+                            if db is None:
+                                db = db_open()
+                            record(db, m)
+                            atomic('history.json', {str(s): history(db, s, m['ts']) for s in (3600, 86400, 604800)})
+                            errors.pop('history', None)
+                        except (OSError, sqlite3.Error, RuntimeError, ValueError) as e:
+                            errors['history'] = str(e)
+                            print(f'RAM Pulse history: {type(e).__name__}: {e}', flush=True)
+                            if db is not None:
+                                db.close()
+                                db = None
+                    if start-last_procs >= 9:
+                        last_procs = start
+                        try:
+                            rows, groups = hoarders()
+                            errors.pop('processes', None)
+                        except (OSError, RuntimeError, ValueError) as e:
+                            rows, groups = [], []
+                            errors['processes'] = str(e)
+                            print(f'RAM Pulse processes: {type(e).__name__}: {e}', flush=True)
+                    m['hoarders'] = rows
+                    m['groups'] = groups
+                    m['collectorErrors'] = dict(errors)
+                    atomic('snapshot.json', m)
+                    previous = m
+                except (OSError, sqlite3.Error, RuntimeError, ValueError) as e:
+                    print(f'RAM Pulse: {type(e).__name__}: {e}', flush=True)
+                time.sleep(max(0.2, 3-(time.monotonic()-start)))
+        finally:
+            if db is not None:
+                db.close()
 
 def focus(pid, start):
     # Re-read identity and routing on click; an old snapshot cannot focus a
