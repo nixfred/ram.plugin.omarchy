@@ -39,8 +39,8 @@ Panel {
     // A group total is only ever the sum of its members' proportional RAM. When
     // any member's Pss could not be read the collector sends null, and the row
     // falls back to the largest resident process rather than inventing a total.
-    function totalOf(row) { return row && row.count > 1 && row.pss !== null && row.pss !== undefined ? row.pss : row.rss }
-    function kindOf(row) { return row && row.count > 1 && row.pss !== null && row.pss !== undefined ? 'proportional' : 'resident' }
+    function totalOf(row) { return row && row.count >= 1 && row.pss !== null && row.pss !== undefined ? row.pss : row.rss }
+    function kindOf(row) { return row && row.count >= 1 && row.pss !== null && row.pss !== undefined ? 'proportional' : 'resident' }
     function setGrouped(value) {
         root.page=0
         root.settings=Object.assign({}, root.settings, {groupByApp:!!value})

@@ -54,19 +54,40 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(ram.window_for(5,{5:{'ppid':6}},{6:{'address':'0xabc'}})['address'],'0xabc')
 
     def test_cgroup_only_groups_on_a_unit_leaf(self):
-        for raw, expect in [('0::/user.slice/app-brave-1.scope', 'app-brave-1.scope'),
-                            ('0::/user.slice/voxtype.service', 'voxtype.service'),
+        for raw, expect in [('0::/user.slice/app-brave-1.scope', '0::/user.slice/app-brave-1.scope'),
+                            ('0::/user.slice/voxtype.service', '0::/user.slice/voxtype.service'),
                             ('0::/user.slice/user-1000.slice', ''),
                             ('0::/', ''), ('', '')]:
             with patch.object(ram, 'read', return_value=raw):
                 self.assertEqual(ram.cgroup_scope(9), expect)
+
+    def test_same_unit_name_under_two_hierarchies_is_not_one_app(self):
+        members = [{'pid': n, 'ppid': 1, 'start': str(n), 'name': 'worker',
+                    'rss': 100, 'pss': 50, 'swap': 0, 'owned': True} for n in (11, 12)]
+        def read_scope(path):
+            user = '1000' if '/11/' in str(path) else '1001'
+            return f'0::/user.slice/user-{user}.slice/worker.service'
+        with patch.object(ram, 'read', side_effect=read_scope):
+            groups = ram.families(members, {p['pid']: p for p in members}, {})
+        self.assertEqual(len(groups), 2)
+        self.assertEqual([g['count'] for g in groups], [1, 1])
+
+    def test_cgroup_prefers_the_unified_hierarchy_over_a_legacy_entry(self):
+        raw = '5:name=systemd:/user.slice/legacy.service\n0::/user.slice/unified.service\n'
+        with patch.object(ram, 'read', return_value=raw):
+            self.assertEqual(ram.cgroup_scope(7), '0::/user.slice/unified.service')
+
+    def test_cgroup_falls_back_to_a_named_systemd_hierarchy(self):
+        raw = '9:memory:/user.slice/ignored.service\n5:name=systemd:/user.slice/legacy.service\n'
+        with patch.object(ram, 'read', return_value=raw):
+            self.assertEqual(ram.cgroup_scope(7), '5:name=systemd:/user.slice/legacy.service')
 
     def test_group_key_prefers_the_window_then_the_scope_then_the_process(self):
         procs = {5: {'pid': 5, 'ppid': 9}, 9: {'pid': 9, 'ppid': 1}}
         windows = {9: {'address': '0xabc'}}
         self.assertEqual(ram.group_of(procs[5], procs, windows), 'window:0xabc')
         with patch.object(ram, 'read', return_value='0::/user.slice/voxtype.service'):
-            self.assertEqual(ram.group_of(procs[5], procs, {}), 'scope:voxtype.service')
+            self.assertEqual(ram.group_of(procs[5], procs, {}), 'scope:0::/user.slice/voxtype.service')
         with patch.object(ram, 'read', return_value='0::/'):
             self.assertEqual(ram.group_of(procs[5], procs, {}), 'pid:5')
 
