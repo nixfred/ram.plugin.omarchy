@@ -30,6 +30,8 @@ Panel {
     readonly property var groups: mem.groups || []
     readonly property bool grouped: setting('groupByApp',true) !== false
     readonly property var listing: grouped ? groups : rows
+    // Telemetry can shorten the list under a reader who is already paging.
+    onListingChanged: page=Math.min(page,Math.max(0,Math.ceil(listing.length/8)-1))
     readonly property var chart: histories[String(range)] || {points:[],seconds:range,now:now,bucket:15,count:0,peak:0}
     readonly property string health: stale ? 'WAITING FOR TELEMETRY' : pressure >= 10 ? 'MEMORY IS STALLING' : mem.availablePct < 20 ? 'LOW HEADROOM' : 'ROOM TO BREATHE'
     readonly property real openPanelIndicatorWidth: button.width-12
