@@ -53,14 +53,39 @@ def update_layout(raw):
     return (json.dumps(data, indent=2) + '\n').encode('utf-8')
 
 
+def symlinked_ancestors(*paths):
+    """Symlinks at or above each path, stopping below $HOME.
+
+    Path.is_symlink() tests only the final component, so checking the files
+    alone catches a symlinked shell.json while missing the far more common
+    dotfiles layout where ~/.config or ~/.config/omarchy is itself the link
+    into a tracked repo. Publishing through one of those writes into the
+    dotfiles repo rather than the destination the installer reports, and the
+    rollback copies then describe files that were never the live ones. $HOME
+    itself is not checked: a symlinked home directory is a system choice, not
+    an install destination the user picked.
+    """
+    home = Path.home()
+    found = set()
+    for path in paths:
+        for candidate in (path, *path.parents):
+            if candidate == home:
+                break
+            if candidate.is_symlink():
+                found.add(str(candidate))
+    return sorted(found)
+
+
 def main():
     source = Path(__file__).resolve().parent
     home = Path.home()
     config = home / '.config/omarchy/shell.json'
     dest = config.parent / 'plugins' / PLUGIN_ID
     unit = home / '.config/systemd/user/ram-pulse.service'
-    if config.is_symlink() or dest.is_symlink() or unit.is_symlink():
-        raise RuntimeError('Resolve symlinked install destinations explicitly before installing.')
+    linked = symlinked_ancestors(config, dest, unit)
+    if linked:
+        raise RuntimeError('Resolve symlinked install destinations explicitly '
+                           'before installing: ' + ', '.join(linked))
     raw = config.read_bytes()
     updated = update_layout(raw)
     config_mode = stat.S_IMODE(config.stat().st_mode) & 0o777

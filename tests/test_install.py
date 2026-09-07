@@ -14,6 +14,10 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
+import sys
+sys.path.insert(0, str(ROOT))
+from install import symlinked_ancestors  # noqa: E402
+
 
 class InstallerTests(unittest.TestCase):
     @contextlib.contextmanager
@@ -105,6 +109,50 @@ class InstallerTests(unittest.TestCase):
         finally:
             os.umask(old_umask)
 
+    def test_refuses_symlinked_config_directory(self):
+        # The dotfiles case: ~/.config/omarchy is the link, shell.json inside it
+        # is a real file. is_symlink() on the file alone says nothing about it.
+        with self.installer_fixture() as (home, config, _, _, _, install):
+            omarchy = config.parent
+            real = home / 'dotfiles/omarchy'
+            real.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(omarchy), str(real))
+            omarchy.symlink_to(real)
+            with self.assertRaises(RuntimeError) as caught:
+                install()
+            self.assertIn(str(omarchy), str(caught.exception))
+            self.assertEqual(
+                (real / 'plugins/nixfred.ram-pulse/Panel.qml').read_text(), 'old plugin')
+
+    def test_refuses_symlinked_config_file(self):
+        with self.installer_fixture() as (home, config, dest, unit, _, install):
+            real = home / 'dotfiles/shell.json'
+            real.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(config), str(real))
+            config.symlink_to(real)
+            with self.assertRaises(RuntimeError):
+                install()
+            self.assertEqual((dest / 'Panel.qml').read_text(), 'old plugin')
+            self.assertEqual(unit.read_text(), 'old unit')
+
+    def test_refuses_symlinked_unit_directory(self):
+        with self.installer_fixture() as (home, _, dest, unit, _, install):
+            systemd = unit.parent
+            real = home / 'dotfiles/systemd-user'
+            real.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(systemd), str(real))
+            systemd.symlink_to(real)
+            with self.assertRaises(RuntimeError):
+                install()
+            self.assertEqual((dest / 'Panel.qml').read_text(), 'old plugin')
+
+    def test_symlinked_home_does_not_block_install(self):
+        # A symlinked $HOME is a system layout, not a destination the user chose
+        # for this plugin; refusing there would strand the installer entirely.
+        with self.installer_fixture() as (home, _, dest, _, _, install):
+            self.assertEqual(symlinked_ancestors(home / '.config/omarchy/shell.json'), [])
+            install()
+            self.assertNotEqual((dest / 'Panel.qml').read_text(), 'old plugin')
 
 if __name__ == '__main__':
     unittest.main()
