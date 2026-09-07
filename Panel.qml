@@ -12,7 +12,7 @@ Panel {
     manageIpc: false
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
-    readonly property string stateDir: (Quickshell.env('XDG_STATE_HOME') || Quickshell.env('HOME')+'/.local/state')+'/ram-pulse'
+    readonly property string stateDir: Model.stateDir(Quickshell.env('HOME'), Quickshell.env('XDG_STATE_HOME'))
     readonly property string helper: String(Qt.resolvedUrl('ram_pulse.py')).replace(/^file:\/\//,'')
     property var mem: ({})
     property var histories: ({})

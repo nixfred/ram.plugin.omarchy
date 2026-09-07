@@ -14,6 +14,8 @@ class MemoryTests(unittest.TestCase):
         home = Path('/example/home')
         default = home / '.local/state/ram-pulse'
         for env, expected in [({}, default), ({'XDG_STATE_HOME': ''}, default),
+                              ({'XDG_STATE_HOME': 'relative'}, default),
+                              ({'XDG_STATE_HOME': './relative'}, default),
                               ({'XDG_STATE_HOME': '/example/state'}, Path('/example/state/ram-pulse'))]:
             with self.subTest(env=env), patch.dict(ram.os.environ, env, clear=True), patch.object(Path, 'home', return_value=home):
                 module = importlib.util.module_from_spec(spec)

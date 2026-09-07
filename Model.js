@@ -21,3 +21,6 @@ function readout(m, mode) {
 }
 function modeName(mode) { return ['% available', '% used', 'Amount used', 'Amount available'][mode] || '% available' }
 function pct(v) { return (Number(v)||0).toFixed(1)+'%' }
+// XDG requires an absolute path; a relative one would resolve against
+// whichever working directory the recorder and the panel each happen to have.
+function stateDir(home, xdg) { return (xdg && xdg.charAt(0) === '/' ? xdg : home+'/.local/state')+'/ram-pulse' }
