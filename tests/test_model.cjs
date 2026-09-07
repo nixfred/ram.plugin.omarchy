@@ -9,4 +9,15 @@ for(const [p,c] of [[0,[133,13,41]],[50,[239,204,69]],[100,[67,242,161]]]){
 }
 assert.equal(ctx.readout({},0),'—');
 assert.equal(ctx.size(1048576),'1.0 MiB');
-console.log('Readout formats, missing telemetry, units, and red/yellow/green endpoints pass.');
+for(const [xdg,expected] of [[undefined,'/home/test/.local/state/ram-pulse'],['','/home/test/.local/state/ram-pulse'],
+    ['relative','/home/test/.local/state/ram-pulse'],['./relative','/home/test/.local/state/ram-pulse'],
+    ['/state','/state/ram-pulse']]){
+  assert.equal(ctx.stateDir('/home/test',xdg),expected);
+}
+const panel=fs.readFileSync('Panel.qml','utf8');
+const expression=panel.match(/readonly property string stateDir:\s*([^\n]+)/)[1];
+for(const [xdg,expected] of [['','/home/test/.local/state/ram-pulse'],['relative','/home/test/.local/state/ram-pulse'],
+    ['/state','/state/ram-pulse']]){
+  assert.equal(vm.runInNewContext(expression,{Model:ctx,Quickshell:{env:n=>n==='HOME'?'/home/test':xdg}}),expected);
+}
+console.log('Readout formats, missing telemetry, units, red/yellow/green endpoints, and state-directory agreement pass.');
