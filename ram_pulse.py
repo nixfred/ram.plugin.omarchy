@@ -120,9 +120,17 @@ def scanned(p):
 def cgroup_scope(pid):
     # Only a unit leaf may group processes. The root cgroup and the slices
     # above it cover unrelated work, so anything else falls back to the
-    # process itself rather than lumping the session into one row.
-    leaf = read(f'/proc/{pid}/cgroup').strip().rsplit('/', 1)[-1]
-    return leaf if leaf.endswith(('.scope', '.service')) else ''
+    # process itself rather than lumping the session into one row. The whole
+    # identity is the key: the same leaf name under two different hierarchies
+    # is two different units. Prefer the unified hierarchy, then named=systemd.
+    entries = [line.split(':', 2) for line in read(f'/proc/{pid}/cgroup').splitlines()]
+    entries = [e for e in entries if len(e) == 3 and e[2].startswith('/')]
+    entries.sort(key=lambda e: e[:2] != ['0', ''])
+    for hierarchy, controllers, path in entries:
+        if (hierarchy == '0' and not controllers) or 'name=systemd' in controllers.split(','):
+            if path.rsplit('/', 1)[-1].endswith(('.scope', '.service')):
+                return ':'.join((hierarchy, controllers, path))
+    return ''
 
 def group_of(p, procs, windows):
     # One row per thing the user can click. window_for only walks the parent
