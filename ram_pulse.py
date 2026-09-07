@@ -30,17 +30,43 @@ def fields(raw):
             pass
     return result
 
-def run(args):
+def run(args, timeout=2):
     try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=2, check=False)
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
         return p.stdout if p.returncode == 0 else ''
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
         return ''
 
-def clients():
+class CommandBudget:
+    # One scan gets one subprocess-wait budget, not one per invocation, and
+    # repeated identical lookups answer from the cache.
+    def __init__(self, seconds=2):
+        self.deadline = time.monotonic() + seconds
+        self.cache = {}
+
+    def __call__(self, args):
+        key = tuple(args)
+        if key not in self.cache:
+            remaining = self.deadline - time.monotonic()
+            self.cache[key] = run(args, timeout=min(2, remaining)) if remaining > 0 else ''
+        return self.cache[key]
+
+def clients(query=None):
+    query = run if query is None else query
     try:
-        value = json.loads(run(['hyprctl', 'clients', '-j']))
-        return [c for c in value if isinstance(c, dict) and isinstance(c.get('pid'), int) and re.fullmatch(r'0x[0-9a-fA-F]+', str(c.get('address', '')))]
+        value = json.loads(query(['hyprctl', 'clients', '-j']))
+        if not isinstance(value, list):
+            return []
+        result = []
+        for c in value:
+            if not isinstance(c, dict) or type(c.get('pid')) is not int or c['pid'] <= 0:
+                continue
+            if not re.fullmatch(r'0x[0-9a-fA-F]+', str(c.get('address', ''))):
+                continue
+            if not isinstance(c.get('workspace'), dict):
+                c = dict(c, workspace={})
+            result.append(c)
+        return result
     except (ValueError, TypeError):
         return []
 
@@ -71,7 +97,8 @@ def window_for(pid, procs, windows):
         pid = procs.get(pid, {}).get('ppid', 0)
     return None
 
-def target_for(p, procs, wins):
+def target_for(p, procs, wins, query=None):
+    query = run if query is None else query
     windows = {c['pid']: c for c in wins}
     w = window_for(p['pid'], procs, windows)
     env = environment(p['pid'])
@@ -99,8 +126,8 @@ def target_for(p, procs, wins):
         sock = env['TMUX'].rsplit(',', 2)[0]
         pane = env['TMUX_PANE']
         # Attach only to a client already displaying this pane's session.
-        session = run(['tmux', '-S', sock, 'display-message', '-p', '-t', pane, '#{session_id}']).strip()
-        for line in run(['tmux', '-S', sock, 'list-clients', '-F', '#{client_pid}\t#{session_id}\t#{client_name}']).splitlines():
+        session = query(['tmux', '-S', sock, 'display-message', '-p', '-t', pane, '#{session_id}']).strip()
+        for line in (query(['tmux', '-S', sock, 'list-clients', '-F', '#{client_pid}\t#{session_id}\t#{client_name}']) if session else '').splitlines():
             parts = line.split('\t')
             if len(parts) == 3 and parts[0].isdigit() and parts[1] == session:
                 cw = window_for(int(parts[0]), procs, windows)
@@ -171,13 +198,14 @@ def families(live, procs, windows):
     return rows[:24]
 
 def hoarders():
+    query = CommandBudget()
     procs = {}
     for entry in Path('/proc').iterdir():
         if entry.name.isdigit():
             p = process(entry.name)
             if p:
                 procs[p['pid']] = p
-    wins = clients()
+    wins = clients(query)
     windows = {c['pid']: c for c in wins}
     live = [p for p in procs.values() if p['rss'] > 0]
     for p in live:
@@ -194,7 +222,7 @@ def hoarders():
     resolved = {}
     def target(p):
         if p['pid'] not in resolved:
-            resolved[p['pid']] = target_for(p, procs, wins) if p['owned'] else {}
+            resolved[p['pid']] = target_for(p, procs, wins, query) if p['owned'] else {}
         return resolved[p['pid']]
 
     rows = sorted(live, key=lambda p: p['rss'], reverse=True)[:24]
