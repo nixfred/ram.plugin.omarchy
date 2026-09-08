@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import runpy
 import shutil
 import stat
@@ -179,6 +180,24 @@ class AboutIdentityTests(unittest.TestCase):
         # exactly when nobody would notice them going stale.
         for url in (self.manifest['repository'], self.manifest['homepage']):
             self.assertIn("'" + url + "'", self.panel)
+
+    def test_about_is_a_tab_and_both_tab_clamps_agree_with_the_strip(self):
+        # Adding a tab means three edits: the strip, the arrow-key bound and the
+        # showTab clamp. Missing either bound leaves the new tab reachable only
+        # by mouse, which is exactly how the About tab would rot unnoticed.
+        strip = re.search(r"Repeater \{model:\[([^\]]+)\]", self.panel)
+        self.assertIsNotNone(strip, 'could not find the tab strip in Panel.qml')
+        tabs = re.findall(r"'([^']+)'", strip.group(1))
+        self.assertIn('About', tabs)
+        last = len(tabs) - 1
+        self.assertIn('root.tab=Math.min(%d,root.tab+1)' % last, self.panel)
+        self.assertIn('Model.clamp(value,0,%d)' % last, self.panel)
+        self.assertIn('root.tab===%d' % last, self.panel)
+
+    def test_about_tab_offers_both_addresses(self):
+        # The tab must open the manifest's URLs, not a second set of literals.
+        self.assertIn('root.openUrl(root.repoUrl)', self.panel)
+        self.assertIn('root.openUrl(root.homeUrl)', self.panel)
 
     def test_the_manifest_ships_with_the_plugin(self):
         import install

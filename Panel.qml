@@ -67,6 +67,14 @@ Panel {
         actionProc.command=['python3',helper,action].concat(row?[String(row.pid),String(row.start)]:[])
         actionProc.running=true
     }
+    // The panel closes first, so the page is never opened behind a popup the
+    // same click dismissed. xdg-open is detached: a cold browser start must not
+    // block the shell's event loop.
+    function openUrl(url) {
+        if(!url) return
+        root.close()
+        Quickshell.execDetached(['xdg-open',url])
+    }
     function status() {
         return JSON.stringify({opened:opened,version:pluginVersion,mode:mode,readout:Model.readout(mem,mode),tint:String(tint),stale:stale,samples:chart.count || 0,tab:tab,chooseMode:chooseMode,total:mem.total,available:mem.available,hoarders:rows.length,groups:groups.length,grouped:grouped,action:actionStatus})
     }
@@ -95,7 +103,7 @@ Panel {
         function status():string {return root.status()}
         function modes():void {root.chooseMode=true;root.open()}
         function display(value:int):void {root.setMode(value)}
-        function showTab(value:int):void {root.tab=Model.clamp(value,0,2);root.chooseMode=false;root.open()}
+        function showTab(value:int):void {root.tab=Model.clamp(value,0,3);root.chooseMode=false;root.open()}
         function historyRange(value:int):void {if([3600,86400,604800].indexOf(value)>=0)root.range=value}
         function grouping(value:bool):void {root.setGrouped(value)}
     }
@@ -121,9 +129,7 @@ Panel {
     component Heading: Text {
         color:'#eff7fa';font.pixelSize:15;font.bold:true;textFormat:Text.PlainText
     }
-    // A caption that opens a URL. xdg-open is detached so a slow browser start
-    // never blocks the shell, and the panel closes so the page is not opened
-    // behind a popup the click also dismissed.
+    // A caption that opens a URL.
     component Link: Text {
         id:linkText
         property string url:''
@@ -131,7 +137,7 @@ Panel {
         font.pixelSize:10;font.underline:linkArea.containsMouse;textFormat:Text.PlainText;elide:Text.ElideRight
         MouseArea {
             id:linkArea;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
-            onClicked:{if(linkText.url===''){return}root.close();Quickshell.execDetached(['xdg-open',linkText.url])}
+            onClicked:root.openUrl(linkText.url)
         }
     }
     component Action: Rectangle {
@@ -167,7 +173,7 @@ Panel {
             Keys.onEscapePressed:root.close()
             Keys.onPressed:function(event){
                 if(event.key===Qt.Key_Left && !root.chooseMode){root.tab=Math.max(0,root.tab-1);event.accepted=true}
-                if(event.key===Qt.Key_Right && !root.chooseMode){root.tab=Math.min(2,root.tab+1);event.accepted=true}
+                if(event.key===Qt.Key_Right && !root.chooseMode){root.tab=Math.min(3,root.tab+1);event.accepted=true}
                 if(root.chooseMode && event.key>=Qt.Key_1 && event.key<=Qt.Key_4){root.setMode(event.key-Qt.Key_1);event.accepted=true}
             }
             Rectangle {anchors.fill:parent;anchors.margins:-10;radius:14;color:'#0b141d'}
@@ -204,7 +210,7 @@ Panel {
                     }
                 }
                 Row {spacing:8
-                    Repeater {model:['Overview','RAM hoarders','Memory lab']
+                    Repeater {model:['Overview','RAM hoarders','Memory lab','About']
                         Action {required property int index;required property string modelData;text:modelData;selected:root.tab===index;onClicked:root.tab=index}
                     }
                 }
@@ -337,6 +343,43 @@ Panel {
                     }
                     Label{width:parent.width;wrapMode:Text.WordWrap;text:'Readouts overlap and are not a pie chart. No process termination, cache purge, swap reset or privileged tuning is exposed.';font.pixelSize:10}
                 }
+                Column {
+                    width:parent.width;spacing:12;visible:root.tab===3;height:visible?implicitHeight:0
+                    Rectangle {
+                        width:parent.width;height:132;radius:16;border.color:Qt.alpha(root.tint,0.45)
+                        gradient:Gradient {GradientStop{position:0;color:Qt.alpha(root.tint,0.13)}GradientStop{position:1;color:'#111d27'}}
+                        // Still, not animated: an About tab should not be the
+                        // most expensive thing the panel draws.
+                        MemoryChip {x:14;y:6;width:120;height:120;available:root.mem.availablePct || 0;tint:root.tint;animate:false}
+                        Column {x:152;y:26;spacing:6
+                            Label{text:'VERSION';font.pixelSize:11;font.letterSpacing:2}
+                            Heading{text:root.pluginVersion || 'unavailable';font.pixelSize:34;font.letterSpacing:1}
+                            Label{text:'RAM Pulse for Omarchy  ·  MIT  ·  Fred Nix';font.pixelSize:11}
+                        }
+                    }
+                    Row {spacing:8
+                        Action{text:'Source code on GitHub  →';onClicked:root.openUrl(root.repoUrl)}
+                        Action{text:'nixfred.com  →';onClicked:root.openUrl(root.homeUrl)}
+                    }
+                    // The addresses in full, and selectable: a click opens the
+                    // browser, but if no handler is configured the reader still
+                    // leaves with somewhere to go.
+                    Column {width:parent.width;spacing:4
+                        Link{text:root.repoUrl;url:root.repoUrl;font.pixelSize:11}
+                        Link{text:root.homeUrl;url:root.homeUrl;font.pixelSize:11}
+                    }
+                    Rectangle{width:parent.width;height:1;color:'#25343f'}
+                    // Where this plugin's moving parts live. An About in a
+                    // diagnostic tool is the natural place to answer "what is
+                    // running and where does it keep things" without a manual.
+                    Flow {
+                        width:parent.width;spacing:10
+                        Stat{width:(mainColumn.width-20)/3;height:91;label:'RECORDER';value:root.stale?'offline':'running';hint:'ram-pulse.service, user unit'}
+                        Stat{width:(mainColumn.width-20)/3;height:91;label:'RETENTION';value:'7 days';hint:'aggregate metrics, this machine only'}
+                        Stat{width:(mainColumn.width-20)/3;height:91;label:'SAMPLES HELD';value:String(root.chart.count||0);hint:'in the range on screen'}
+                    }
+                    Label{width:parent.width;wrapMode:Text.WordWrap;font.pixelSize:11;text:'State lives in '+root.stateDir+' and never leaves this machine. RAM Pulse reads unprivileged kernel counters only: it never terminates a process, purges cache, resets swap or writes a tunable.'}
+                }
                 Rectangle{width:parent.width;height:1;color:'#25343f'}
                 Label{width:parent.width;wrapMode:Text.WordWrap;font.pixelSize:10;color:root.stale?'#f0ba82':'#a4b9c3';text:root.actionStatus || (root.stale?'Telemetry is offline. Check the ram-pulse user service.':root.mem.collectorErrors && Object.keys(root.mem.collectorErrors).length?'Live memory is available; recorder details are degraded. Check the ram-pulse user service.': 'LIVE · updated '+Qt.formatTime(new Date(root.mem.ts*1000),'h:mm:ss AP')+'  ·  History stays on this machine  ·  Esc closes')}
                 // About: version, source, site. At the foot of the panel and in
@@ -345,6 +388,10 @@ Panel {
                 // file to learn which RAM Pulse you are looking at. A Flow, not a
                 // Row, so a long repo path wraps rather than eliding to nothing.
                 Flow {
+                    // The About tab states all three at full size; repeating
+                    // them a centimetre below would be noise. Every other tab
+                    // keeps the caption, which is the whole point of it.
+                    visible:root.tab!==3
                     width:parent.width;spacing:6
                     Label{text:'RAM Pulse'+(root.pluginVersion!==''?' v'+root.pluginVersion:'');font.pixelSize:10}
                     Label{text:'·';font.pixelSize:10;visible:root.repoUrl!==''}

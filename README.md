@@ -32,15 +32,18 @@ omarchy-shell nixfred.ram-pulse open
 omarchy-shell nixfred.ram-pulse modes
 omarchy-shell nixfred.ram-pulse status
 omarchy-shell nixfred.ram-pulse grouping true
+omarchy-shell nixfred.ram-pulse showTab 3   # About
 systemctl --user status ram-pulse.service
 journalctl --user -u ram-pulse.service
 python3 -m unittest discover -s tests -v
 omarchy plugin validate .
 ```
 
-The foot of the panel carries the About line: the running version, the source repository and nixfred.com. Both addresses open in your browser and close the panel. The version is read from the installed `manifest.json` through the shell's plugin registry, so it is the build actually running rather than one written into the QML.
+The **About** tab carries the running version, the source repository and nixfred.com, alongside the recorder's state: whether `ram-pulse.service` is up, how much history is retained, how many samples back the range on screen, and the state directory the data lives in. Both addresses open in your browser and close the panel first, so the page never lands behind the popup the same click dismissed.
 
-Left/right arrows change dashboard tabs. Escape closes. Keys 1–4 select modes in the right-click picker. Inline bar setting `animated: false` disables chip animations; `groupByApp: false` opens RAM hoarders as a flat process list; `showReadout: false` hides the numeric readout beside the chip, leaving the color-coded glyph only — useful on crowded bars where horizontal space is tight and the chip's red → yellow → green tint is enough. Defaults to showing the readout. Chip and graph repaints are coalesced onto a 10Hz tick and stop entirely while off screen.
+Every other tab carries the same three facts as one dim caption line at the foot of the panel, so you never have to leave what you are reading to learn which build you are looking at. The version comes from the installed `manifest.json` through the shell's plugin registry, so it is the build actually running rather than one written into the QML.
+
+Left/right arrows move through the four dashboard tabs. Escape closes. Keys 1–4 select modes in the right-click picker. Inline bar setting `animated: false` disables chip animations; `groupByApp: false` opens RAM hoarders as a flat process list; `showReadout: false` hides the numeric readout beside the chip, leaving the color-coded glyph only — useful on crowded bars where horizontal space is tight and the chip's red → yellow → green tint is enough. Defaults to showing the readout. Chip and graph repaints are coalesced onto a 10Hz tick and stop entirely while off screen.
 
 Disable with `omarchy plugin disable nixfred.ram-pulse` and `systemctl --user disable --now ram-pulse.service`. This stops only this plugin's telemetry service; historical data stays available. Restore the timestamped `shell.json` backup only if you also intend to restore that earlier layout.
 
