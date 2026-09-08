@@ -154,5 +154,36 @@ class InstallerTests(unittest.TestCase):
             install()
             self.assertNotEqual((dest / 'Panel.qml').read_text(), 'old plugin')
 
+class AboutIdentityTests(unittest.TestCase):
+    """The About line must not drift from the manifest it claims to report."""
+
+    def setUp(self):
+        self.manifest = json.loads((ROOT / 'manifest.json').read_text())
+        self.panel = (ROOT / 'Panel.qml').read_text()
+
+    def test_manifest_carries_version_repository_and_homepage(self):
+        self.assertRegex(self.manifest['version'], r'^\d+\.\d+\.\d+$')
+        self.assertEqual(self.manifest['homepage'], 'https://nixfred.com')
+        self.assertTrue(self.manifest['repository'].startswith('https://github.com/nixfred/'),
+                        self.manifest['repository'])
+
+    def test_panel_reads_the_manifest_rather_than_restating_it(self):
+        # A hardcoded version is the failure this guards: it survives a bump in
+        # manifest.json and then reports the wrong build forever.
+        self.assertNotIn(self.manifest['version'], self.panel)
+        self.assertIn('pluginRegistry', self.panel)
+        self.assertIn('installedPlugins', self.panel)
+
+    def test_panel_fallback_urls_match_the_manifest(self):
+        # The constants only apply when the registry is unreachable, which is
+        # exactly when nobody would notice them going stale.
+        for url in (self.manifest['repository'], self.manifest['homepage']):
+            self.assertIn("'" + url + "'", self.panel)
+
+    def test_the_manifest_ships_with_the_plugin(self):
+        import install
+        self.assertIn('manifest.json', install.FILES)
+
+
 if __name__ == '__main__':
     unittest.main()

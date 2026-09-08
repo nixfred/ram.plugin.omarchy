@@ -38,6 +38,8 @@ python3 -m unittest discover -s tests -v
 omarchy plugin validate .
 ```
 
+The foot of the panel carries the About line: the running version, the source repository and nixfred.com. Both addresses open in your browser and close the panel. The version is read from the installed `manifest.json` through the shell's plugin registry, so it is the build actually running rather than one written into the QML.
+
 Left/right arrows change dashboard tabs. Escape closes. Keys 1–4 select modes in the right-click picker. Inline bar setting `animated: false` disables chip animations; `groupByApp: false` opens RAM hoarders as a flat process list; `showReadout: false` hides the numeric readout beside the chip, leaving the color-coded glyph only — useful on crowded bars where horizontal space is tight and the chip's red → yellow → green tint is enough. Defaults to showing the readout. Chip and graph repaints are coalesced onto a 10Hz tick and stop entirely while off screen.
 
 Disable with `omarchy plugin disable nixfred.ram-pulse` and `systemctl --user disable --now ram-pulse.service`. This stops only this plugin's telemetry service; historical data stays available. Restore the timestamped `shell.json` backup only if you also intend to restore that earlier layout.

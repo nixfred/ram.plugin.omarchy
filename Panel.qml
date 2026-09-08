@@ -14,6 +14,16 @@ Panel {
     implicitHeight: button.implicitHeight
     readonly property string stateDir: Model.stateDir(Quickshell.env('HOME'), Quickshell.env('XDG_STATE_HOME'))
     readonly property string helper: String(Qt.resolvedUrl('ram_pulse.py')).replace(/^file:\/\//,'')
+    // Identity for the About line. The manifest is the single source of truth
+    // for all three, so bumping a version or moving the repo is one edit there.
+    // The constants are the fallback for when the registry is not reachable.
+    readonly property var pluginManifest: {
+        var reg = bar && bar.shell ? bar.shell.pluginRegistry : null
+        return reg && reg.installedPlugins ? (reg.installedPlugins[root.moduleName] || null) : null
+    }
+    readonly property string pluginVersion: pluginManifest && pluginManifest.version ? String(pluginManifest.version) : ''
+    readonly property string repoUrl: pluginManifest && pluginManifest.repository ? String(pluginManifest.repository) : 'https://github.com/nixfred/ram.plugin.omarchy'
+    readonly property string homeUrl: pluginManifest && pluginManifest.homepage ? String(pluginManifest.homepage) : 'https://nixfred.com'
     property var mem: ({})
     property var histories: ({})
     property int tab: 0
@@ -58,7 +68,7 @@ Panel {
         actionProc.running=true
     }
     function status() {
-        return JSON.stringify({opened:opened,mode:mode,readout:Model.readout(mem,mode),tint:String(tint),stale:stale,samples:chart.count || 0,tab:tab,chooseMode:chooseMode,total:mem.total,available:mem.available,hoarders:rows.length,groups:groups.length,grouped:grouped,action:actionStatus})
+        return JSON.stringify({opened:opened,version:pluginVersion,mode:mode,readout:Model.readout(mem,mode),tint:String(tint),stale:stale,samples:chart.count || 0,tab:tab,chooseMode:chooseMode,total:mem.total,available:mem.available,hoarders:rows.length,groups:groups.length,grouped:grouped,action:actionStatus})
     }
     onOpenedChanged: if(opened) { snapshotFile.reload(); historyFile.reload() }
     FileView {
@@ -110,6 +120,19 @@ Panel {
     }
     component Heading: Text {
         color:'#eff7fa';font.pixelSize:15;font.bold:true;textFormat:Text.PlainText
+    }
+    // A caption that opens a URL. xdg-open is detached so a slow browser start
+    // never blocks the shell, and the panel closes so the page is not opened
+    // behind a popup the click also dismissed.
+    component Link: Text {
+        id:linkText
+        property string url:''
+        color:linkArea.containsMouse?'#eff7fa':'#91a5b0'
+        font.pixelSize:10;font.underline:linkArea.containsMouse;textFormat:Text.PlainText;elide:Text.ElideRight
+        MouseArea {
+            id:linkArea;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
+            onClicked:{if(linkText.url===''){return}root.close();Quickshell.execDetached(['xdg-open',linkText.url])}
+        }
     }
     component Action: Rectangle {
         id:act
@@ -316,6 +339,19 @@ Panel {
                 }
                 Rectangle{width:parent.width;height:1;color:'#25343f'}
                 Label{width:parent.width;wrapMode:Text.WordWrap;font.pixelSize:10;color:root.stale?'#f0ba82':'#a4b9c3';text:root.actionStatus || (root.stale?'Telemetry is offline. Check the ram-pulse user service.':root.mem.collectorErrors && Object.keys(root.mem.collectorErrors).length?'Live memory is available; recorder details are degraded. Check the ram-pulse user service.': 'LIVE · updated '+Qt.formatTime(new Date(root.mem.ts*1000),'h:mm:ss AP')+'  ·  History stays on this machine  ·  Esc closes')}
+                // About: version, source, site. At the foot of the panel and in
+                // the dim caption colour, so it never competes with the readings
+                // — but always present, because you should never have to open a
+                // file to learn which RAM Pulse you are looking at. A Flow, not a
+                // Row, so a long repo path wraps rather than eliding to nothing.
+                Flow {
+                    width:parent.width;spacing:6
+                    Label{text:'RAM Pulse'+(root.pluginVersion!==''?' v'+root.pluginVersion:'');font.pixelSize:10}
+                    Label{text:'·';font.pixelSize:10;visible:root.repoUrl!==''}
+                    Link{visible:root.repoUrl!=='';text:root.repoUrl.replace(/^https?:\/\//,'');url:root.repoUrl}
+                    Label{text:'·';font.pixelSize:10;visible:root.homeUrl!==''}
+                    Link{visible:root.homeUrl!=='';text:root.homeUrl.replace(/^https?:\/\//,'');url:root.homeUrl}
+                }
             }
         }
     }
