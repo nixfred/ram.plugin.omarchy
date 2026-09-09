@@ -36,6 +36,7 @@ omarchy-shell nixfred.ram-pulse showTab 3   # About
 systemctl --user status ram-pulse.service
 journalctl --user -u ram-pulse.service
 python3 -m unittest discover -s tests -v
+for t in tests/*.cjs; do node "$t"; done
 omarchy plugin validate .
 ```
 
@@ -46,6 +47,16 @@ Every other tab carries the same three facts as one dim caption line at the foot
 Left/right arrows move through the four dashboard tabs. Escape closes. Keys 1–4 select modes in the right-click picker. Inline bar setting `animated: false` disables chip animations; `groupByApp: false` opens RAM hoarders as a flat process list; `showReadout: false` hides the numeric readout beside the chip, leaving the color-coded glyph only — useful on crowded bars where horizontal space is tight and the chip's red → yellow → green tint is enough. Defaults to showing the readout. Chip and graph repaints are coalesced onto a 10Hz tick and stop entirely while off screen.
 
 Disable with `omarchy plugin disable nixfred.ram-pulse` and `systemctl --user disable --now ram-pulse.service`. This stops only this plugin's telemetry service; historical data stays available. Restore the timestamped `shell.json` backup only if you also intend to restore that earlier layout.
+
+## Theming
+
+Every colour is the active Omarchy theme's. Chrome comes from the shell's own popup roles: `popups.background`, `popups.text`, `accent`, `muted` and `urgent`. Card fills, hover states and separators are the theme foreground laid over the theme background at low alpha, so they follow a light theme as readily as a dark one rather than assuming either. Text uses the bar's font family.
+
+The headroom ramp is the exception that proves the rule. It is the one colour on screen carrying meaning rather than style, so it stays a traffic light — but in the theme's own red, yellow and green, read from the theme's `colors.toml`. A theme that omits one of those keys keeps the shipped colour for that stop alone, not a whole foreign ramp.
+
+The shell reads `colors.toml` once at startup and is pushed later palettes over IPC, so a file watcher alone would strand the ramp on the previous theme. The panel re-reads the palette whenever the shell's own colours move, which is exactly when that push lands: switching themes retints the chip, the graph and the panel without a shell restart.
+
+`tests/test_theming.cjs` fails the build if a hardcoded colour reappears in `Panel.qml`, and checks the parser against every theme installed on the machine.
 
 ## Accounting
 

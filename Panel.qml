@@ -13,6 +13,27 @@ Panel {
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
     readonly property string stateDir: Model.stateDir(Quickshell.env('HOME'), Quickshell.env('XDG_STATE_HOME'))
+    // Theme surface. Every colour the panel paints derives from the active
+    // Omarchy theme: the popup roles for chrome, and the theme's own red,
+    // yellow and green for the headroom ramp. Card fills and strokes are the
+    // foreground laid over the popup background at low alpha, so they follow a
+    // light theme as readily as a dark one instead of assuming either.
+    readonly property color themeText: Color.popups.text
+    readonly property color themeBg: Color.popups.background
+    readonly property color themeAccent: Color.accent
+    readonly property color themeMuted: Color.muted
+    readonly property color themeUrgent: Color.urgent
+    readonly property color themeSoft: Qt.alpha(themeText,0.78)
+    readonly property color surfaceIdle: Qt.tint(themeBg,Qt.alpha(themeText,0.03))
+    readonly property color surface: Qt.tint(themeBg,Qt.alpha(themeText,0.05))
+    readonly property color surfaceHover: Qt.tint(themeBg,Qt.alpha(themeText,0.11))
+    readonly property color stroke: Qt.tint(themeBg,Qt.alpha(themeText,0.18))
+    readonly property color strokeStrong: Qt.tint(themeBg,Qt.alpha(themeText,0.34))
+    readonly property string themeFont: bar ? bar.fontFamily : Style.font.family
+    // The three ramp stops, read from the theme's own palette file.
+    property var rampPalette: Model.RAMP_FALLBACK
+    readonly property color rampWarn: rampPalette.mid
+    readonly property color rampGood: rampPalette.high
     readonly property string helper: String(Qt.resolvedUrl('ram_pulse.py')).replace(/^file:\/\//,'')
     // Identity for the About line. The manifest is the single source of truth
     // for all three, so bumping a version or moving the repo is one edit there.
@@ -34,7 +55,7 @@ Panel {
     property real now: Date.now()/1000
     readonly property bool stale: !mem.ts || now-mem.ts > 15
     readonly property int mode: Model.clamp(setting('displayMode',0),0,3)
-    readonly property color tint: stale ? '#71838c' : Model.ramp(mem.availablePct)
+    readonly property color tint: stale ? themeMuted : Model.ramp(mem.availablePct,rampPalette)
     readonly property real pressure: mem.psi && mem.psi.some ? mem.psi.some.avg10 : 0
     readonly property var rows: mem.hoarders || []
     readonly property var groups: mem.groups || []
@@ -89,6 +110,21 @@ Panel {
         onFileChanged:reload()
         onLoaded:{try{root.histories=JSON.parse(text())}catch(e){}}
     }
+    FileView {
+        // The theme's own palette, for the three ramp stops the shell does not
+        // expose. watchChanges covers a theme edited in place.
+        id:themePalette
+        path:Quickshell.env('HOME')+'/.local/state/omarchy/current/theme/colors.toml'
+        watchChanges:true; printErrors:false
+        onFileChanged:reload()
+        onLoaded:root.rampPalette=Model.themeRamp(text())
+    }
+    // A runtime theme switch does not touch colors.toml in a way the watcher
+    // can see: the shell loads it once at startup and has the new palette
+    // pushed to Color over IPC instead. So re-read the file whenever the
+    // shell's own colours move, which is exactly when that push lands.
+    readonly property string themeSignature: String(Color.background)+String(Color.foreground)+String(Color.accent)+String(Color.urgent)
+    onThemeSignatureChanged: themePalette.reload()
     Timer { interval:3000; running:true; repeat:true; onTriggered:{root.now=Date.now()/1000; if(root.stale)snapshotFile.reload()} }
     Process {
         id:actionProc
@@ -114,7 +150,7 @@ Panel {
         onPressed:function(b){if(b===Qt.RightButton){root.chooseMode=true;root.open()}else{root.chooseMode=false;root.toggle()}}
         Row {
             id:barRow;anchors.centerIn:parent;spacing:4
-            MemoryChip {compact:true;available:root.mem.availablePct || 0;tint:root.tint;animate:!root.stale && root.setting('animated',true)}
+            MemoryChip {compact:true;body:root.themeBg;available:root.mem.availablePct || 0;tint:root.tint;animate:!root.stale && root.setting('animated',true)}
             Column {
                 visible:root.showReadout
                 anchors.verticalCenter:parent.verticalCenter
@@ -124,17 +160,17 @@ Panel {
         }
     }
     component Label: Text {
-        color:'#91a5b0';font.pixelSize:12;textFormat:Text.PlainText
+        color:root.themeMuted;font.pixelSize:12;font.family:root.themeFont;textFormat:Text.PlainText
     }
     component Heading: Text {
-        color:'#eff7fa';font.pixelSize:15;font.bold:true;textFormat:Text.PlainText
+        color:root.themeText;font.pixelSize:15;font.bold:true;font.family:root.themeFont;textFormat:Text.PlainText
     }
     // A caption that opens a URL.
     component Link: Text {
         id:linkText
         property string url:''
-        color:linkArea.containsMouse?'#eff7fa':'#91a5b0'
-        font.pixelSize:10;font.underline:linkArea.containsMouse;textFormat:Text.PlainText;elide:Text.ElideRight
+        color:linkArea.containsMouse?root.themeText:root.themeMuted
+        font.pixelSize:10;font.family:root.themeFont;font.underline:linkArea.containsMouse;textFormat:Text.PlainText;elide:Text.ElideRight
         MouseArea {
             id:linkArea;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
             onClicked:root.openUrl(linkText.url)
@@ -147,17 +183,17 @@ Panel {
         property color accent:root.tint
         signal clicked()
         implicitWidth:caption.implicitWidth+26;implicitHeight:34
-        radius:9;color:act.selected?Qt.alpha(accent,0.18):area.containsMouse?'#22333f':'#14222b'
-        border.color:act.selected?accent:area.containsMouse?'#536a76':'#2a3b47'
+        radius:9;color:act.selected?Qt.alpha(accent,0.18):area.containsMouse?root.surfaceHover:root.surfaceIdle
+        border.color:act.selected?accent:area.containsMouse?root.strokeStrong:root.stroke
         Behavior on color {ColorAnimation{duration:120}}
-        Text{id:caption;anchors.centerIn:parent;text:act.text;color:act.selected?'#ffffff':'#c3d3dc';font.pixelSize:12;font.bold:act.selected;textFormat:Text.PlainText}
+        Text{id:caption;anchors.centerIn:parent;text:act.text;color:act.selected?root.themeText:root.themeSoft;font.pixelSize:12;font.family:root.themeFont;font.bold:act.selected;textFormat:Text.PlainText}
         MouseArea{id:area;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:act.clicked()}
     }
     component Stat: Rectangle {
         property string label:''
         property string value:''
         property string hint:''
-        radius:12;color:'#111e28';border.color:'#253744'
+        radius:12;color:root.surface;border.color:root.stroke
         Column {anchors.fill:parent;anchors.margins:12;spacing:5
             Label{text:label;font.pixelSize:10;font.letterSpacing:1}
             Heading{text:value;font.pixelSize:20}
@@ -176,7 +212,7 @@ Panel {
                 if(event.key===Qt.Key_Right && !root.chooseMode){root.tab=Math.min(3,root.tab+1);event.accepted=true}
                 if(root.chooseMode && event.key>=Qt.Key_1 && event.key<=Qt.Key_4){root.setMode(event.key-Qt.Key_1);event.accepted=true}
             }
-            Rectangle {anchors.fill:parent;anchors.margins:-10;radius:14;color:'#0b141d'}
+            Rectangle {anchors.fill:parent;anchors.margins:-10;radius:14;color:root.themeBg}
             Column {
                 id:modeColumn;width:parent.width;spacing:12;visible:root.chooseMode
                 Heading{text:'BAR READOUT';font.letterSpacing:1.5}
@@ -205,7 +241,7 @@ Panel {
                             Rectangle {width:6;height:6;radius:3;color:root.tint;anchors.verticalCenter:parent.verticalCenter
                                 SequentialAnimation on opacity {running:root.opened&&!root.stale;loops:Animation.Infinite;NumberAnimation{to:0.3;duration:900}NumberAnimation{to:1;duration:900}}
                             }
-                            Label{text:root.health;color:'#e4edf0';font.pixelSize:9;font.bold:true}
+                            Label{text:root.health;color:root.themeText;font.pixelSize:9;font.bold:true}
                         }
                     }
                 }
@@ -219,25 +255,25 @@ Panel {
                     height:visible?implicitHeight:0
                     Rectangle {
                         width:parent.width;height:170;radius:16;border.color:Qt.alpha(root.tint,0.45)
-                        gradient:Gradient {GradientStop{position:0;color:Qt.alpha(root.tint,0.13)}GradientStop{position:1;color:'#111d27'}}
-                        MemoryChip {id:heroChip;x:12;y:5;width:160;height:160;available:root.mem.availablePct || 0;tint:root.tint;animate:root.opened&&root.tab===0&&!root.stale&&root.setting('animated',true)}
+                        gradient:Gradient {GradientStop{position:0;color:Qt.alpha(root.tint,0.13)}GradientStop{position:1;color:root.surface}}
+                        MemoryChip {id:heroChip;body:root.themeBg;x:12;y:5;width:160;height:160;available:root.mem.availablePct || 0;tint:root.tint;animate:root.opened&&root.tab===0&&!root.stale&&root.setting('animated',true)}
                         Column {x:188;y:20;spacing:6
                             Label{text:'AVAILABLE HEADROOM';font.pixelSize:11;font.letterSpacing:2}
                             Row {spacing:10
-                                Text {text:root.stale?'—':Model.gib(root.mem.available);color:'#f4fafc';font.pixelSize:52;font.weight:Font.Light}
+                                Text {text:root.stale?'—':Model.gib(root.mem.available);color:root.themeText;font.pixelSize:52;font.family:root.themeFont;font.weight:Font.Light}
                                 Label{text:'GiB';font.pixelSize:18;anchors.bottom:parent.bottom;anchors.bottomMargin:10}
                             }
-                            Label{text:Model.pct(root.mem.availablePct)+' available  /  '+Model.size(root.mem.total)+' usable physical RAM';color:'#c4d6dc'}
+                            Label{text:Model.pct(root.mem.availablePct)+' available  /  '+Model.size(root.mem.total)+' usable physical RAM';color:root.themeSoft}
                             Label{text:'Used = total − available, including kernel reservations.';font.pixelSize:10}
                         }
-                        Text {anchors.right:parent.right;anchors.rightMargin:20;anchors.top:parent.top;anchors.topMargin:22;text:Model.pct(root.mem.usedPct)+'\nused';color:Qt.alpha('#edf7fa',0.5);font.pixelSize:15;horizontalAlignment:Text.AlignRight}
+                        Text {anchors.right:parent.right;anchors.rightMargin:20;anchors.top:parent.top;anchors.topMargin:22;text:Model.pct(root.mem.usedPct)+'\nused';color:Qt.alpha(root.themeText,0.5);font.pixelSize:15;horizontalAlignment:Text.AlignRight}
                     }
                     Row {width:parent.width;spacing:10
                         Stat{width:(parent.width-20)/3;height:96;label:'IN USE';value:Model.size(root.mem.used);hint:Model.pct(root.mem.usedPct)+' of physical RAM'}
                         Stat{width:(parent.width-20)/3;height:96;label:'REUSABLE CACHE';value:Model.size(root.mem.cache);hint:'Kernel reclaims it as needed'}
                         Stat{width:(parent.width-20)/3;height:96;label:'MEMORY PRESSURE';value:Model.pct(root.pressure);hint:'Time tasks stalled · last 10s'}
                     }
-                    Rectangle {width:parent.width;height:242;radius:14;color:'#101c26';border.color:'#273843'
+                    Rectangle {width:parent.width;height:242;radius:14;color:root.surface;border.color:root.stroke
                         Column {anchors.fill:parent;anchors.margins:14;spacing:9
                             Row {width:parent.width;spacing:7
                                 Heading{text:'CONTINUOUS HISTORY';font.pixelSize:12;width:parent.width-222;anchors.verticalCenter:parent.verticalCenter}
@@ -245,23 +281,26 @@ Panel {
                                     Action{required property var modelData;text:modelData.t;selected:root.range===modelData.s;implicitWidth:68;implicitHeight:28;onClicked:root.range=modelData.s}
                                 }
                             }
-                            HistoryGraph{width:parent.width;height:139;historyData:root.chart;tint:root.tint}
+                            HistoryGraph{width:parent.width;height:139;historyData:root.chart;tint:root.tint
+                                swapTint:root.themeAccent;grid:root.stroke;axisText:root.themeMuted
+                                crosshair:root.strokeStrong;hoverBackground:root.surfaceHover
+                                hoverBorder:root.stroke;hoverForeground:root.themeText;fontFamily:root.themeFont}
                             Row{spacing:14
                                 Label{text:'━ RAM used';color:root.tint;font.pixelSize:10}
-                                Label{text:'━ Swap used';color:'#8d9dff';font.pixelSize:10}
+                                Label{text:'━ Swap used';color:root.themeAccent;font.pixelSize:10}
                                 Label{text:'Peak '+Model.pct(root.chart.peak)+'  ·  '+(root.chart.count||0)+' samples';font.pixelSize:10}
                             }
                             Label{text:(root.chart.count||0)<2?'History is starting. Samples accumulate every 15 seconds.':'Recording while closed · 7-day retention · hover to inspect · faint line = RAM peaks';font.pixelSize:10}
                         }
                     }
-                    Rectangle {width:parent.width;height:105;radius:14;color:'#121b2c';border.color:'#303a57'
+                    Rectangle {width:parent.width;height:105;radius:14;color:root.surface;border.color:root.stroke
                         Column{anchors.fill:parent;anchors.margins:14;spacing:9
                             Row{width:parent.width
                                 Heading{text:'SWAP + ZRAM';font.pixelSize:12;width:parent.width/2}
-                                Label{text:Model.size(root.mem.swapUsed)+' / '+Model.size(root.mem.swapTotal);width:parent.width/2;horizontalAlignment:Text.AlignRight;color:'#c0c8ff'}
+                                Label{text:Model.size(root.mem.swapUsed)+' / '+Model.size(root.mem.swapTotal);width:parent.width/2;horizontalAlignment:Text.AlignRight;color:root.themeSoft}
                             }
-                            Rectangle{width:parent.width;height:5;radius:3;color:'#273148'
-                                Rectangle{width:parent.width*Model.clamp(root.mem.swapTotal?root.mem.swapUsed/root.mem.swapTotal:0,0,1);height:parent.height;radius:3;color:'#939eff';Behavior on width{NumberAnimation{duration:800}}}
+                            Rectangle{width:parent.width;height:5;radius:3;color:root.stroke
+                                Rectangle{width:parent.width*Model.clamp(root.mem.swapTotal?root.mem.swapUsed/root.mem.swapTotal:0,0,1);height:parent.height;radius:3;color:root.themeAccent;Behavior on width{NumberAnimation{duration:800}}}
                             }
                             Label{text:root.mem.zram?'zram stores '+Model.size(root.mem.zram.original)+' in '+Model.size(root.mem.zram.physical)+' of real RAM  ·  '+(root.mem.zram.physical?root.mem.zram.original/root.mem.zram.physical:0).toFixed(1)+'× effective ratio':'Reading compressed swap…';font.pixelSize:11}
                             Label{text:'In '+Model.size(root.mem.rates?root.mem.rates.pswpin*root.mem.pageSize:0)+'/s  ·  Out '+Model.size(root.mem.rates?root.mem.rates.pswpout*root.mem.pageSize:0)+'/s  ·  swap allocation alone does not mean active thrashing';font.pixelSize:10}
@@ -284,7 +323,7 @@ Panel {
                             required property var modelData
                             required property int index
                             width:mainColumn.width;height:65;radius:10
-                            color:hoarderMouse.containsMouse?'#1d303b':'#111e28';border.color:hoarderMouse.containsMouse?root.tint:'#263844'
+                            color:hoarderMouse.containsMouse?root.surfaceHover:root.surface;border.color:hoarderMouse.containsMouse?root.tint:root.stroke
                             Rectangle{anchors.left:parent.left;anchors.bottom:parent.bottom;anchors.leftMargin:12;anchors.bottomMargin:5;width:(parent.width-24)*Model.clamp(root.totalOf(procRow.modelData)/(root.mem.total||1),0,1);height:2;radius:1;color:root.tint}
                             Label{x:12;y:22;text:String(root.page*8+procRow.index+1).padStart(2,'0');font.pixelSize:12;color:root.tint}
                             Column{x:44;y:10;spacing:5;width:parent.width-222
@@ -331,14 +370,14 @@ Panel {
                     }
                     Column{width:parent.width;spacing:7
                         Repeater{model:root.mem.swaps||[]
-                            Label{required property var modelData;width:parent.width;text:modelData.name+'  ·  '+Model.size(modelData.used)+' / '+Model.size(modelData.total)+'  ·  priority '+modelData.priority;color:'#b6c0fb';font.pixelSize:11}
+                            Label{required property var modelData;width:parent.width;text:modelData.name+'  ·  '+Model.size(modelData.used)+' / '+Model.size(modelData.total)+'  ·  priority '+modelData.priority;color:root.themeAccent;font.pixelSize:11}
                         }
                     }
-                    Rectangle{width:parent.width;height:152;radius:12;color:'#11251f';border.color:'#2c5547'
+                    Rectangle{width:parent.width;height:152;radius:12;color:Qt.tint(root.themeBg,Qt.alpha(root.rampGood,0.08));border.color:Qt.alpha(root.rampGood,0.42)
                         Column{anchors.fill:parent;anchors.margins:14;spacing:9
                             Heading{text:'LET LINUX RECLAIM CACHE';font.pixelSize:12}
-                            Label{width:parent.width;wrapMode:Text.WordWrap;text:'Available RAM already includes memory Linux can reuse. Dirty pages contain pending writes. Flushing writes safely saves that data; it does not guarantee more available RAM. Repeated flushing can briefly increase disk activity.';font.pixelSize:11;color:'#abc4b9'}
-                            Action{text:actionProc.running?'Working…':'Flush pending writes';accent:'#63c89e';onClicked:root.runAction('flush')}
+                            Label{width:parent.width;wrapMode:Text.WordWrap;text:'Available RAM already includes memory Linux can reuse. Dirty pages contain pending writes. Flushing writes safely saves that data; it does not guarantee more available RAM. Repeated flushing can briefly increase disk activity.';font.pixelSize:11;color:root.themeSoft}
+                            Action{text:actionProc.running?'Working…':'Flush pending writes';accent:root.rampGood;onClicked:root.runAction('flush')}
                         }
                     }
                     Label{width:parent.width;wrapMode:Text.WordWrap;text:'Readouts overlap and are not a pie chart. No process termination, cache purge, swap reset or privileged tuning is exposed.';font.pixelSize:10}
@@ -347,10 +386,10 @@ Panel {
                     width:parent.width;spacing:12;visible:root.tab===3;height:visible?implicitHeight:0
                     Rectangle {
                         width:parent.width;height:132;radius:16;border.color:Qt.alpha(root.tint,0.45)
-                        gradient:Gradient {GradientStop{position:0;color:Qt.alpha(root.tint,0.13)}GradientStop{position:1;color:'#111d27'}}
+                        gradient:Gradient {GradientStop{position:0;color:Qt.alpha(root.tint,0.13)}GradientStop{position:1;color:root.surface}}
                         // Still, not animated: an About tab should not be the
                         // most expensive thing the panel draws.
-                        MemoryChip {x:14;y:6;width:120;height:120;available:root.mem.availablePct || 0;tint:root.tint;animate:false}
+                        MemoryChip {x:14;y:6;body:root.themeBg;width:120;height:120;available:root.mem.availablePct || 0;tint:root.tint;animate:false}
                         Column {x:152;y:26;spacing:6
                             Label{text:'VERSION';font.pixelSize:11;font.letterSpacing:2}
                             Heading{text:root.pluginVersion || 'unavailable';font.pixelSize:34;font.letterSpacing:1}
@@ -368,7 +407,7 @@ Panel {
                         Link{text:root.repoUrl;url:root.repoUrl;font.pixelSize:11}
                         Link{text:root.homeUrl;url:root.homeUrl;font.pixelSize:11}
                     }
-                    Rectangle{width:parent.width;height:1;color:'#25343f'}
+                    Rectangle{width:parent.width;height:1;color:root.stroke}
                     // Where this plugin's moving parts live. An About in a
                     // diagnostic tool is the natural place to answer "what is
                     // running and where does it keep things" without a manual.
@@ -380,8 +419,8 @@ Panel {
                     }
                     Label{width:parent.width;wrapMode:Text.WordWrap;font.pixelSize:11;text:'State lives in '+root.stateDir+' and never leaves this machine. RAM Pulse reads unprivileged kernel counters only: it never terminates a process, purges cache, resets swap or writes a tunable.'}
                 }
-                Rectangle{width:parent.width;height:1;color:'#25343f'}
-                Label{width:parent.width;wrapMode:Text.WordWrap;font.pixelSize:10;color:root.stale?'#f0ba82':'#a4b9c3';text:root.actionStatus || (root.stale?'Telemetry is offline. Check the ram-pulse user service.':root.mem.collectorErrors && Object.keys(root.mem.collectorErrors).length?'Live memory is available; recorder details are degraded. Check the ram-pulse user service.': 'LIVE · updated '+Qt.formatTime(new Date(root.mem.ts*1000),'h:mm:ss AP')+'  ·  History stays on this machine  ·  Esc closes')}
+                Rectangle{width:parent.width;height:1;color:root.stroke}
+                Label{width:parent.width;wrapMode:Text.WordWrap;font.pixelSize:10;color:root.stale?root.rampWarn:root.themeSoft;text:root.actionStatus || (root.stale?'Telemetry is offline. Check the ram-pulse user service.':root.mem.collectorErrors && Object.keys(root.mem.collectorErrors).length?'Live memory is available; recorder details are degraded. Check the ram-pulse user service.': 'LIVE · updated '+Qt.formatTime(new Date(root.mem.ts*1000),'h:mm:ss AP')+'  ·  History stays on this machine  ·  Esc closes')}
                 // About: version, source, site. At the foot of the panel and in
                 // the dim caption colour, so it never competes with the readings
                 // — but always present, because you should never have to open a

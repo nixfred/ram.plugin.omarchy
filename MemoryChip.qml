@@ -7,6 +7,9 @@ Item {
     property bool animate: true
     property bool compact: false
     property color tint: Model.ramp(available)
+    // The chip's own body. The panel passes the theme's popup background so the
+    // silicon reads as a cut-out of the panel rather than a fixed dark square.
+    property color body: '#0b141b'
     property real phase: 0
     property real level: available / 100
     implicitWidth: compact ? 28 : 160
@@ -26,6 +29,7 @@ Item {
     }
     function repaint() { if (root.visible) canvas.requestPaint() }
     onTintChanged: repaint()
+    onBodyChanged: repaint()
     onLevelChanged: repaint()
     onVisibleChanged: repaint()
     Canvas {
@@ -50,7 +54,7 @@ Item {
                     c.arc(cx,cy,body*(0.78+ring*0.12),ang,ang+0.42);c.stroke()
                 }
             }
-            c.fillStyle='#0b141b'; c.strokeStyle=root.tint; c.lineWidth=root.compact?1.2:2
+            c.fillStyle=root.body; c.strokeStyle=root.tint; c.lineWidth=root.compact?1.2:2
             c.fillRect(x,y,body,body)
             c.shadowColor=root.tint; c.shadowBlur=root.compact?5:12
             c.strokeRect(x,y,body,body); c.shadowBlur=0
