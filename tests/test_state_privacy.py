@@ -210,6 +210,35 @@ class UnsafeStateInTheDaemonTests(unittest.TestCase):
             self.assertIn('symlink', result.stdout)
             self.assertEqual(target.read_text(), '')
 
+    def test_an_unsafe_state_directory_stops_the_daemon_without_a_restart_loop(self):
+        # Exit status zero, because Restart=on-failure must not fire. The
+        # directory checks in prepare_state() are unconditional even when
+        # strict=False, so a symlinked state directory raises out of the
+        # setup path; the daemon must report it and stop quietly instead of
+        # cycling every five seconds.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'elsewhere'
+            target.mkdir(mode=0o700)
+            (Path(tmp) / 'ram-pulse').symlink_to(target)
+            result = subprocess.run([sys.executable, str(ROOT / 'ram_pulse.py'), 'daemon'],
+                                    env={**os.environ, 'XDG_STATE_HOME': tmp},
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn('state directory', result.stdout)
+            self.assertTrue((Path(tmp) / 'ram-pulse').is_symlink())
+
+    def test_a_state_setup_refusal_stops_the_daemon_without_a_restart_loop(self):
+        # The foreign-owned directory case raises RuntimeError rather than
+        # OSError, and ownership cannot be arranged from an unprivileged test,
+        # so exercise the guard directly: any setup refusal must stop the
+        # daemon quietly, never escape as an exception.
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(ram, 'STATE', Path(tmp)), \
+                patch.object(ram, 'prepare_state', side_effect=RuntimeError('not owned')), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            ram.daemon()
+        self.assertIn('state directory', out.getvalue())
+
     def test_an_interactive_run_still_refuses_outright(self):
         # A person is waiting on this one and can act on the message.
         with tempfile.TemporaryDirectory() as tmp:

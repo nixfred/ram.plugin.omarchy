@@ -399,7 +399,18 @@ def atomic(name, value):
         tmp.unlink(missing_ok=True)
 
 def daemon():
-    unsafe = prepare_state(strict=False)
+    # prepare_state() still refuses an unsafe state directory outright --
+    # ownership and O_NOFOLLOW on the directory itself are unconditional even
+    # when strict=False. That refusal must not escape as an exception: the
+    # unit is Restart=on-failure, so exiting nonzero here turns one actionable
+    # problem (a symlinked or foreign-owned state directory) into an endless
+    # five-second restart cycle. Report it and stop quietly instead, the same
+    # way an unsafe collector.lock below does.
+    try:
+        unsafe = prepare_state(strict=False)
+    except (OSError, RuntimeError) as e:
+        print(f'RAM Pulse: not starting, unsafe state directory: {e}', flush=True)
+        return
     # collector.lock is opened by path and is the first thing this function
     # touches, so an unsafe one cannot be worked around. Return rather than
     # raise: the unit is Restart=on-failure, so exiting zero leaves one clear
