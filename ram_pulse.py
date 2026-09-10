@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """RAM Pulse: unprivileged telemetry, persistent history, focus-only navigation."""
 import argparse
+import errno
 import fcntl
 import json
 import os
@@ -281,33 +282,85 @@ def metrics(previous=None):
             'psi': psi, 'rates': rates, 'vm': vm, 'swaps': swaps, 'zram': zram,
             'pageSize': os.sysconf('SC_PAGE_SIZE'), 'details': m}
 
-def prepare_state():
+# State files fall into two classes, and a symlink means a different thing to
+# each. Replaced files are written with tempfile.mkstemp and Path.replace():
+# rename(2) does not follow a symlink at the destination, so it replaces the
+# link itself rather than writing through it. Refusing there would cost a
+# deliberate dotfiles arrangement its setup and buy nothing atomic() has not
+# already bought. snapshot.tmp is the fixed name an older release wrote to; it
+# is listed so an existing one is repaired rather than left at its old mode.
+REPLACED_STATE = ('snapshot.json', 'history.json', 'snapshot.tmp')
+# Opened in place, by path, so a symlink is genuinely followed and written
+# through: sqlite opens the database and its sidecars, and the two locks and
+# the flush stamp are opened directly.
+IN_PLACE_STATE = ('history.sqlite3', 'history.sqlite3-wal', 'history.sqlite3-shm',
+                  'history.sqlite3-journal', 'collector.lock', 'flush.lock', 'last-flush')
+
+
+def inspect_state(directory, name):
+    """Vet one state file without following a link, repairing its mode.
+
+    Returns None when the file is absent or fine, and a reason otherwise. The
+    caller decides what an unsafe file costs, because that differs by file.
+    """
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                     dir_fd=directory)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        # O_NOFOLLOW reports a symlink as ELOOP. Say what it is rather than
+        # letting a bare errno reach the reader.
+        return 'is a symlink' if e.errno == errno.ELOOP else str(e)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return 'is not a regular file'
+        if info.st_uid != os.getuid():
+            return 'is owned by another user'
+        if info.st_nlink != 1:
+            return 'has more than one hard link'
+        os.fchmod(fd, 0o600)
+        return None
+    finally:
+        os.close(fd)
+
+
+def prepare_state(strict=True):
+    """Make the state directory private and vet the files in it.
+
+    Returns {name: reason} for files that are not safe to write. Ownership and
+    O_NOFOLLOW on the directory itself are unconditional either way.
+
+    strict=True is the interactive path -- snapshot, focus, flush -- where a
+    person is waiting on the answer and an unsafe in-place file should stop
+    them with a message. The daemon passes strict=False and decides per file:
+    the unit is Restart=on-failure, so raising here would turn one actionable
+    problem into an endless five-second restart cycle.
+    """
     # The README promises a 0700 directory of 0600 files. mkdir's mode applies
     # only when it creates the directory, so an existing state directory, or a
     # file left behind by an older release, keeps whatever mode it already had.
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory = os.open(STATE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    unsafe = {}
     try:
         if os.fstat(directory).st_uid != os.getuid():
             raise RuntimeError('RAM Pulse state directory is not owned by this user.')
         os.fchmod(directory, 0o700)
-        for name in ('snapshot.json', 'history.json', 'history.sqlite3', 'history.sqlite3-wal',
-                     'history.sqlite3-shm', 'history.sqlite3-journal', 'collector.lock',
-                     'flush.lock', 'last-flush'):
-            try:
-                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-                             dir_fd=directory)
-            except FileNotFoundError:
-                continue
-            try:
-                info = os.fstat(fd)
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
-                    raise RuntimeError('Unsafe RAM Pulse state file: ' + name)
-                os.fchmod(fd, 0o600)
-            finally:
-                os.close(fd)
+        for name in REPLACED_STATE:
+            reason = inspect_state(directory, name)
+            if reason:
+                unsafe[name] = reason
+        for name in IN_PLACE_STATE:
+            reason = inspect_state(directory, name)
+            if reason:
+                if strict:
+                    raise RuntimeError('Unsafe RAM Pulse state file: ' + name + ' ' + reason)
+                unsafe[name] = reason
     finally:
         os.close(directory)
+    return unsafe
 
 def db_open():
     db = sqlite3.connect(STATE / 'history.sqlite3', timeout=1)
@@ -346,6 +399,19 @@ def atomic(name, value):
         tmp.unlink(missing_ok=True)
 
 def daemon():
+    unsafe = prepare_state(strict=False)
+    # collector.lock is opened by path and is the first thing this function
+    # touches, so an unsafe one cannot be worked around. Return rather than
+    # raise: the unit is Restart=on-failure, so exiting zero leaves one clear
+    # message in the journal instead of an endless five-second restart cycle.
+    if 'collector.lock' in unsafe:
+        print('RAM Pulse: not starting, collector.lock ' + unsafe['collector.lock'], flush=True)
+        return
+    # An unsafe database costs history, not the whole recorder. This is the
+    # isolation the snapshot loop already applies to a corrupt database: keep
+    # publishing current memory, and say in the dashboard why history stopped.
+    blocked = sorted(n for n in unsafe if n.startswith('history.sqlite3'))
+    warned = sorted(n for n in unsafe if not n.startswith('history.sqlite3'))
     with (STATE / 'collector.lock').open('w') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -356,12 +422,20 @@ def daemon():
         last_history = last_procs = 0
         rows, groups = [], []
         errors = {}
+        if blocked:
+            errors['history'] = '; '.join(n + ' ' + unsafe[n] for n in blocked)
+            print('RAM Pulse history: ' + errors['history'], flush=True)
+        if warned:
+            # Replaced by rename(2), so nothing is written through the link.
+            # Still worth surfacing: the reader chose that layout or did not.
+            errors['state'] = '; '.join(n + ' ' + unsafe[n] for n in warned)
+            print('RAM Pulse state: ' + errors['state'], flush=True)
         try:
             while True:
                 start = time.monotonic()
                 try:
                     m = metrics(previous)
-                    if start-last_history >= 15:
+                    if start-last_history >= 15 and not blocked:
                         last_history = start
                         try:
                             if db is None:
@@ -471,10 +545,10 @@ def main():
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        prepare_state()
         if args.action == 'daemon':
             daemon()
             return
+        prepare_state()
         value = metrics() if args.action == 'snapshot' else focus(args.pid, args.start) if args.action == 'focus' else flush()
         print(json.dumps(value))
     except Exception as e:
