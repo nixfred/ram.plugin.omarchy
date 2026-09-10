@@ -3,7 +3,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 spec = importlib.util.spec_from_file_location('ram', Path(__file__).resolve().parents[1]/'ram_pulse.py')
 ram = importlib.util.module_from_spec(spec)
@@ -157,6 +157,84 @@ class MemoryTests(unittest.TestCase):
     def test_environment_allowlist(self):
         with patch.object(ram,'read',return_value='TOKEN=secret\0HERDR_PANE_ID=w1:p2\0PASSWORD=secret\0'):
             self.assertEqual(ram.environment(1),{'HERDR_PANE_ID':'w1:p2'})
+
+    def test_owned_socket_accepts_only_user_owned_sockets(self):
+        import os
+        import socket as sockmod
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / 'test.sock')
+            s = sockmod.socket(sockmod.AF_UNIX)
+            try:
+                s.bind(path)
+                self.assertEqual(ram.owned_socket(path), path)
+            finally:
+                s.close()
+            plain = Path(d) / 'plain'
+            plain.write_text('x')
+            self.assertEqual(ram.owned_socket(str(plain)), '')
+            fifo = Path(d) / 'fifo'
+            os.mkfifo(fifo)
+            self.assertEqual(ram.owned_socket(str(fifo)), '')
+            self.assertEqual(ram.owned_socket(str(Path(d) / 'missing')), '')
+            self.assertEqual(ram.owned_socket(''), '')
+            self.assertEqual(ram.owned_socket(None), '')
+
+    def _herdr_target(self, sock_path, wins, procs):
+        envs = {50: {'HERDR_ENV': '1', 'HERDR_PANE_ID': 'w1:p1',
+                     'HERDR_SOCKET_PATH': sock_path,
+                     'HERDR_WORKSPACE_ID': 'w1', 'HERDR_TAB_ID': 'w1:t1'},
+                90: {'HERDR_SOCKET_PATH': sock_path}}
+        with patch.object(ram, 'environment', side_effect=lambda pid: envs.get(pid, {})):
+            return ram.target_for({'pid': 50}, procs, wins)
+
+    def test_herdr_branch_ignores_a_non_socket_path(self):
+        procs = {50: {'pid': 50, 'ppid': 1, 'name': 'sh'},
+                 90: {'pid': 90, 'ppid': 1, 'name': 'herdr'}}
+        wins = [{'pid': 90, 'address': '0xherdr', 'title': 'herdr'}]
+        self.assertEqual(self._herdr_target('/nonexistent.sock', wins, procs), {})
+
+    def test_herdr_branch_keeps_a_user_owned_socket(self):
+        import socket as sockmod
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / 'herdr.sock')
+            s = sockmod.socket(sockmod.AF_UNIX)
+            try:
+                s.bind(path)
+                procs = {50: {'pid': 50, 'ppid': 1, 'name': 'sh'},
+                         90: {'pid': 90, 'ppid': 1, 'name': 'herdr'}}
+                wins = [{'pid': 90, 'address': '0xherdr', 'title': 'herdr'}]
+                target = self._herdr_target(path, wins, procs)
+            finally:
+                s.close()
+        self.assertEqual(target['host']['kind'], 'herdr')
+        self.assertEqual(target['host']['socket'], path)
+
+    def test_tmux_branch_ignores_a_non_socket_and_runs_no_subprocess(self):
+        import os
+        procs = {50: {'pid': 50, 'ppid': 1, 'name': 'sh'}}
+        query = MagicMock(return_value='')
+        env = {'TMUX': '/tmp/not-a-socket,1,0', 'TMUX_PANE': '%3'}
+        with patch.object(ram, 'environment', return_value=env):
+            target = ram.target_for({'pid': 50}, procs, [], query)
+        self.assertEqual(target, {})
+        query.assert_not_called()
+
+    def test_focus_degrades_to_window_focus_on_a_stale_socket(self):
+        import json
+        import os
+        host = {'kind': 'tmux', 'socket': '/nonexistent.sock', 'pane': '%3', 'client': 'c'}
+        target = {'address': '0xabc', 'title': 't', 'workspace': 'w', 'host': host}
+        proc = {'pid': os.getpid(), 'start': 's', 'name': 'sh', 'ppid': 1,
+                'rss': 1, 'swap': 0}
+        version = json.dumps({'tag': '0.50.0'})
+        with patch.object(ram, 'process', return_value=dict(proc)), \
+             patch.object(ram, 'target_for', return_value=dict(target)), \
+             patch.object(ram, 'run') as run:
+            # clients() for the scan, then the version probe, then dispatch.
+            run.side_effect = ['[]', version, 'ok']
+            self.assertEqual(ram.focus(os.getpid(), 's'), {'message': 'Focused sh'})
+            dispatched = run.call_args[0][0]
+            self.assertEqual(dispatched[:2], ['hyprctl', 'dispatch'])
 
     def test_recycled_pid_cannot_focus(self):
         with patch.object(ram,'process',return_value={'start':'new'}),patch.object(ram,'run') as run:
