@@ -49,7 +49,7 @@ Panel {
     property var histories: ({})
     property int tab: 0
     property int page: 0
-    property int range: 3600
+    property int range: Model.RANGES[0].seconds
     property bool chooseMode: false
     property string actionStatus: ''
     property real now: Date.now()/1000
@@ -62,17 +62,13 @@ Panel {
     readonly property bool grouped: setting('groupByApp',true) !== false
     readonly property bool showReadout: setting('showReadout',true) !== false
     readonly property var listing: grouped ? groups : rows
+    readonly property var tabs: ['Overview', 'RAM hoarders', 'Memory lab', 'About']
+    readonly property int lastTab: tabs.length - 1
     // Telemetry can shorten the list under a reader who is already paging.
-    onListingChanged: page=Math.min(page,Math.max(0,Math.ceil(listing.length/8)-1))
+    onListingChanged: page=Model.clampPage(page, listing.length, Model.PAGE_SIZE)
     readonly property var chart: histories[String(range)] || {points:[],seconds:range,now:now,bucket:15,count:0,peak:0}
     readonly property string health: stale ? 'WAITING FOR TELEMETRY' : pressure >= 10 ? 'MEMORY IS STALLING' : mem.availablePct < 20 ? 'LOW HEADROOM' : 'ROOM TO BREATHE'
-    readonly property real openPanelIndicatorWidth: button.width-12
 
-    // A group total is only ever the sum of its members' proportional RAM. When
-    // any member's Pss could not be read the collector sends null, and the row
-    // falls back to the largest resident process rather than inventing a total.
-    function totalOf(row) { return row && row.count >= 1 && row.pss !== null && row.pss !== undefined ? row.pss : row.rss }
-    function kindOf(row) { return row && row.count >= 1 && row.pss !== null && row.pss !== undefined ? 'proportional' : 'resident' }
     function setGrouped(value) {
         root.page=0
         root.settings=Object.assign({}, root.settings, {groupByApp:!!value})
@@ -139,8 +135,8 @@ Panel {
         function status():string {return root.status()}
         function modes():void {root.chooseMode=true;root.open()}
         function display(value:int):void {root.setMode(value)}
-        function showTab(value:int):void {root.tab=Model.clamp(value,0,3);root.chooseMode=false;root.open()}
-        function historyRange(value:int):void {if([3600,86400,604800].indexOf(value)>=0)root.range=value}
+        function showTab(value:int):void {root.tab=Model.clamp(value,0,root.lastTab);root.chooseMode=false;root.open()}
+        function historyRange(value:int):void {if(Model.validRange(value))root.range=value}
         function grouping(value:bool):void {root.setGrouped(value)}
     }
     WidgetButton {
@@ -164,17 +160,6 @@ Panel {
     }
     component Heading: Text {
         color:root.themeText;font.pixelSize:15;font.bold:true;font.family:root.themeFont;textFormat:Text.PlainText
-    }
-    // A caption that opens a URL.
-    component Link: Text {
-        id:linkText
-        property string url:''
-        color:linkArea.containsMouse?root.themeText:root.themeMuted
-        font.pixelSize:10;font.family:root.themeFont;font.underline:linkArea.containsMouse;textFormat:Text.PlainText;elide:Text.ElideRight
-        MouseArea {
-            id:linkArea;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
-            onClicked:root.openUrl(linkText.url)
-        }
     }
     component Action: Rectangle {
         id:act
@@ -209,7 +194,7 @@ Panel {
             Keys.onEscapePressed:root.close()
             Keys.onPressed:function(event){
                 if(event.key===Qt.Key_Left && !root.chooseMode){root.tab=Math.max(0,root.tab-1);event.accepted=true}
-                if(event.key===Qt.Key_Right && !root.chooseMode){root.tab=Math.min(3,root.tab+1);event.accepted=true}
+                if(event.key===Qt.Key_Right && !root.chooseMode){root.tab=Math.min(root.lastTab,root.tab+1);event.accepted=true}
                 if(root.chooseMode && event.key>=Qt.Key_1 && event.key<=Qt.Key_4){root.setMode(event.key-Qt.Key_1);event.accepted=true}
             }
             Rectangle {anchors.fill:parent;anchors.margins:-10;radius:14;color:root.themeBg}
@@ -246,7 +231,7 @@ Panel {
                     }
                 }
                 Row {spacing:8
-                    Repeater {model:['Overview','RAM hoarders','Memory lab','About']
+                    Repeater {model:root.tabs
                         Action {required property int index;required property string modelData;text:modelData;selected:root.tab===index;onClicked:root.tab=index}
                     }
                 }
@@ -277,8 +262,8 @@ Panel {
                         Column {anchors.fill:parent;anchors.margins:14;spacing:9
                             Row {width:parent.width;spacing:7
                                 Heading{text:'CONTINUOUS HISTORY';font.pixelSize:12;width:parent.width-222;anchors.verticalCenter:parent.verticalCenter}
-                                Repeater{model:[{t:'1 hour',s:3600},{t:'24 hours',s:86400},{t:'7 days',s:604800}]
-                                    Action{required property var modelData;text:modelData.t;selected:root.range===modelData.s;implicitWidth:68;implicitHeight:28;onClicked:root.range=modelData.s}
+                                Repeater{model:Model.RANGES
+                                    Action{required property var modelData;text:modelData.text;selected:root.range===modelData.seconds;implicitWidth:68;implicitHeight:28;onClicked:root.range=modelData.seconds}
                                 }
                             }
                             HistoryGraph{width:parent.width;height:139;historyData:root.chart;tint:root.tint
@@ -317,22 +302,22 @@ Panel {
                     }
                     Label{text:root.grouped?'One row per window or service. Click a row to visit it. Ranked by proportional RAM.':'One row per process, ranked by resident RAM. Click a row to visit its app or attached session.';font.pixelSize:11}
                     Repeater {
-                        model:root.listing.slice(root.page*8,root.page*8+8)
+                        model:root.listing.slice(root.page*Model.PAGE_SIZE,root.page*Model.PAGE_SIZE+Model.PAGE_SIZE)
                         Rectangle {
                             id:procRow
                             required property var modelData
                             required property int index
                             width:mainColumn.width;height:65;radius:10
                             color:hoarderMouse.containsMouse?root.surfaceHover:root.surface;border.color:hoarderMouse.containsMouse?root.tint:root.stroke
-                            Rectangle{anchors.left:parent.left;anchors.bottom:parent.bottom;anchors.leftMargin:12;anchors.bottomMargin:5;width:(parent.width-24)*Model.clamp(root.totalOf(procRow.modelData)/(root.mem.total||1),0,1);height:2;radius:1;color:root.tint}
-                            Label{x:12;y:22;text:String(root.page*8+procRow.index+1).padStart(2,'0');font.pixelSize:12;color:root.tint}
+                            Rectangle{anchors.left:parent.left;anchors.bottom:parent.bottom;anchors.leftMargin:12;anchors.bottomMargin:5;width:(parent.width-24)*Model.clamp(Model.totalOf(procRow.modelData)/(root.mem.total||1),0,1);height:2;radius:1;color:root.tint}
+                            Label{x:12;y:22;text:String(root.page*Model.PAGE_SIZE+procRow.index+1).padStart(2,'0');font.pixelSize:12;color:root.tint}
                             Column{x:44;y:10;spacing:5;width:parent.width-222
                                 Heading{text:procRow.modelData.name+'  ·  '+(procRow.modelData.count>1?procRow.modelData.count+' processes':procRow.modelData.pid);font.pixelSize:13;width:parent.width;elide:Text.ElideRight}
-                                Label{text:procRow.modelData.target.address?(procRow.modelData.target.host.kind==='herdr'?'Herdr '+procRow.modelData.target.host.pane+' · ':procRow.modelData.target.host.kind==='tmux'?'tmux '+procRow.modelData.target.host.pane+' · ':'')+procRow.modelData.target.title:procRow.modelData.count>1?procRow.modelData.names.join(', ')+' · no attached window':'Background process · no attached window';width:parent.width;elide:Text.ElideRight;font.pixelSize:10}
+                                Label{text:Model.targetLabel(procRow.modelData);width:parent.width;elide:Text.ElideRight;font.pixelSize:10}
                             }
                             Column{anchors.right:parent.right;anchors.rightMargin:35;y:10;spacing:5
-                                Heading{text:Model.size(root.totalOf(procRow.modelData));font.pixelSize:15;anchors.right:parent.right}
-                                Label{text:root.kindOf(procRow.modelData)+'  ·  swap '+Model.size(procRow.modelData.swap);font.pixelSize:10;anchors.right:parent.right}
+                                Heading{text:Model.size(Model.totalOf(procRow.modelData));font.pixelSize:15;anchors.right:parent.right}
+                                Label{text:Model.kindOf(procRow.modelData)+'  ·  swap '+Model.size(procRow.modelData.swap);font.pixelSize:10;anchors.right:parent.right}
                             }
                             Label{anchors.right:parent.right;anchors.rightMargin:13;y:22;text:procRow.modelData.target.address?'↗':'ⓘ';color:root.tint;font.pixelSize:16}
                             MouseArea{id:hoarderMouse;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
@@ -342,8 +327,8 @@ Panel {
                     }
                     Row{spacing:10
                         Action{text:'← Previous';opacity:root.page>0?1:0.4;onClicked:root.page=Math.max(0,root.page-1)}
-                        Label{text:(root.page+1)+' / '+Math.max(1,Math.ceil(root.listing.length/8));anchors.verticalCenter:parent.verticalCenter}
-                        Action{text:'Next →';opacity:(root.page+1)*8<root.listing.length?1:0.4;onClicked:root.page=Math.min(Math.max(0,Math.ceil(root.listing.length/8)-1),root.page+1)}
+                        Label{text:(root.page+1)+' / '+Model.pageCount(root.listing.length,Model.PAGE_SIZE);anchors.verticalCenter:parent.verticalCenter}
+                        Action{text:'Next →';opacity:(root.page+1)*Model.PAGE_SIZE<root.listing.length?1:0.4;onClicked:root.page=Model.clampPage(root.page+1,root.listing.length,Model.PAGE_SIZE)}
                     }
                     Label{width:parent.width;wrapMode:Text.WordWrap;text:root.grouped?'A group total is proportional RAM: every shared page is divided between the processes mapping it, so these totals may be added together. A group whose members cannot all be read shows its largest resident process instead, marked resident. Windows group with the processes behind them; a service groups with its own helpers.':'RSS includes shared pages, so process totals must not be added together. Swap is per-process anonymous swap; shared swap may be omitted. Browser subprocesses lead to their browser window.';font.pixelSize:10}
                 }
@@ -383,7 +368,7 @@ Panel {
                     Label{width:parent.width;wrapMode:Text.WordWrap;text:'Readouts overlap and are not a pie chart. No process termination, cache purge, swap reset or privileged tuning is exposed.';font.pixelSize:10}
                 }
                 Column {
-                    width:parent.width;spacing:12;visible:root.tab===3;height:visible?implicitHeight:0
+                    width:parent.width;spacing:12;visible:root.tab===root.lastTab;height:visible?implicitHeight:0
                     Rectangle {
                         width:parent.width;height:132;radius:16;border.color:Qt.alpha(root.tint,0.45)
                         gradient:Gradient {GradientStop{position:0;color:Qt.alpha(root.tint,0.13)}GradientStop{position:1;color:root.surface}}
@@ -400,14 +385,7 @@ Panel {
                         Action{text:'Source code on GitHub  →';onClicked:root.openUrl(root.repoUrl)}
                         Action{text:'nixfred.com  →';onClicked:root.openUrl(root.homeUrl)}
                     }
-                    // The addresses in full, and selectable: a click opens the
-                    // browser, but if no handler is configured the reader still
-                    // leaves with somewhere to go.
-                    Column {width:parent.width;spacing:4
-                        Link{text:root.repoUrl;url:root.repoUrl;font.pixelSize:11}
-                        Link{text:root.homeUrl;url:root.homeUrl;font.pixelSize:11}
-                    }
-                    Rectangle{width:parent.width;height:1;color:root.stroke}
+                    PanelSeparator{}
                     // Where this plugin's moving parts live. An About in a
                     // diagnostic tool is the natural place to answer "what is
                     // running and where does it keep things" without a manual.
@@ -419,25 +397,8 @@ Panel {
                     }
                     Label{width:parent.width;wrapMode:Text.WordWrap;font.pixelSize:11;text:'State lives in '+root.stateDir+' and never leaves this machine. RAM Pulse reads unprivileged kernel counters only: it never terminates a process, purges cache, resets swap or writes a tunable.'}
                 }
-                Rectangle{width:parent.width;height:1;color:root.stroke}
-                Label{width:parent.width;wrapMode:Text.WordWrap;font.pixelSize:10;color:root.stale?root.rampWarn:root.themeSoft;text:root.actionStatus || (root.stale?'Telemetry is offline. Check the ram-pulse user service.':root.mem.collectorErrors && Object.keys(root.mem.collectorErrors).length?'Live memory is available; recorder details are degraded. Check the ram-pulse user service.': 'LIVE · updated '+Qt.formatTime(new Date(root.mem.ts*1000),'h:mm:ss AP')+'  ·  History stays on this machine  ·  Esc closes')}
-                // About: version, source, site. At the foot of the panel and in
-                // the dim caption colour, so it never competes with the readings
-                // — but always present, because you should never have to open a
-                // file to learn which RAM Pulse you are looking at. A Flow, not a
-                // Row, so a long repo path wraps rather than eliding to nothing.
-                Flow {
-                    // The About tab states all three at full size; repeating
-                    // them a centimetre below would be noise. Every other tab
-                    // keeps the caption, which is the whole point of it.
-                    visible:root.tab!==3
-                    width:parent.width;spacing:6
-                    Label{text:'RAM Pulse'+(root.pluginVersion!==''?' v'+root.pluginVersion:'');font.pixelSize:10}
-                    Label{text:'·';font.pixelSize:10;visible:root.repoUrl!==''}
-                    Link{visible:root.repoUrl!=='';text:root.repoUrl.replace(/^https?:\/\//,'');url:root.repoUrl}
-                    Label{text:'·';font.pixelSize:10;visible:root.homeUrl!==''}
-                    Link{visible:root.homeUrl!=='';text:root.homeUrl.replace(/^https?:\/\//,'');url:root.homeUrl}
-                }
+                PanelSeparator{}
+                Label{width:parent.width;wrapMode:Text.WordWrap;font.pixelSize:10;color:root.stale?root.rampWarn:root.themeSoft;text:Model.recorderStatus(root.actionStatus,root.stale,root.mem.collectorErrors && Object.keys(root.mem.collectorErrors).length,Qt.formatTime(new Date(root.mem.ts*1000),'h:mm:ss AP'))}
             }
         }
     }
