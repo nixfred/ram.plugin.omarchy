@@ -36,6 +36,8 @@ class CommandBudgetTests(unittest.TestCase):
             self.assertEqual(ram.run(['anything']), '')
 
     def test_scan_shares_one_subprocess_wait_budget(self):
+        import socket as sockmod
+        import tempfile
         clock = [1000.0]
         queries = []
         def command(args, **kwargs):
@@ -47,29 +49,59 @@ class CommandBudgetTests(unittest.TestCase):
             raise subprocess.TimeoutExpired(args, kwargs['timeout'])
         members = {n: {'pid': n, 'ppid': 2000, 'start': str(n), 'name': 'worker',
                        'rss': n, 'swap': 0} for n in range(100, 124)}
-        with patch.object(Path, 'iterdir', return_value=[Path(f'/proc/{n}') for n in members]), \
-             patch.object(Path, 'stat', return_value=SimpleNamespace(st_uid=os.getuid())), \
-             patch.object(ram, 'process', side_effect=lambda n: members[int(n)].copy()), \
-             patch.object(ram, 'read', return_value='Pss: 10 kB'), \
-             patch.object(ram, 'environment', return_value={'TMUX': '/test/socket,1,0', 'TMUX_PANE': '%1'}), \
-             patch.object(ram.subprocess, 'run', side_effect=command), \
-             patch.object(ram.time, 'monotonic', side_effect=lambda: clock[0]):
-            rows, groups = ram.hoarders()
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / 'tmux.sock')
+            s = sockmod.socket(sockmod.AF_UNIX)
+            try:
+                s.bind(path)
+                env = {'TMUX': path + ',1,0', 'TMUX_PANE': '%1'}
+                with patch.object(Path, 'iterdir', return_value=[Path(f'/proc/{n}') for n in members]), \
+                    patch.object(Path, 'stat', return_value=SimpleNamespace(st_uid=os.getuid())), \
+                    patch.object(ram, 'process', side_effect=lambda n: members[int(n)].copy()), \
+                    patch.object(ram, 'read', return_value='Pss: 10 kB'), \
+                    patch.object(ram, 'environment', return_value=env), \
+                    patch.object(ram.subprocess, 'run', side_effect=command), \
+                    patch.object(ram.time, 'monotonic', side_effect=lambda: clock[0]):
+                    rows, groups = ram.hoarders()
+            finally:
+                s.close()
         self.assertEqual(len(rows), 24)
         self.assertTrue(groups)
         self.assertLessEqual(clock[0] - 1000.0, 2.01)
         self.assertLessEqual(sum(args[0] == 'tmux' for args in queries), 2)
 
     def test_unresolved_session_skips_the_client_list_query(self):
+        import socket as sockmod
+        import tempfile
+        asked = []
+        def query(args):
+            asked.append(args)
+            return ''
+        procs = {5: {'pid': 5, 'ppid': 1, 'start': '5', 'name': 'sh', 'rss': 1, 'swap': 0}}
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / 'tmux.sock')
+            s = sockmod.socket(sockmod.AF_UNIX)
+            try:
+                s.bind(path)
+                env = {'TMUX': path + ',1,0', 'TMUX_PANE': '%1'}
+                with patch.object(ram, 'environment', return_value=env):
+                    ram.target_for(procs[5], procs, [], query)
+            finally:
+                s.close()
+        self.assertEqual([args[2] for args in asked if args[0] == 'tmux'], [path])
+        self.assertNotIn('list-clients', [a for args in asked for a in args])
+
+    def test_unusable_socket_skips_the_session_query_entirely(self):
+        # A TMUX path that is not a user-owned socket is never probed: no
+        # display-message lookup, no subprocess at all.
         asked = []
         def query(args):
             asked.append(args)
             return ''
         procs = {5: {'pid': 5, 'ppid': 1, 'start': '5', 'name': 'sh', 'rss': 1, 'swap': 0}}
         with patch.object(ram, 'environment', return_value={'TMUX': '/test/socket,1,0', 'TMUX_PANE': '%1'}):
-            ram.target_for(procs[5], procs, [], query)
-        self.assertEqual([args[2] for args in asked if args[0] == 'tmux'], ['/test/socket'])
-        self.assertNotIn('list-clients', [a for args in asked for a in args])
+            self.assertEqual(ram.target_for(procs[5], procs, [], query), {})
+        self.assertEqual(asked, [])
 
     def test_malformed_client_records_are_rejected_or_normalized(self):
         payload = [{'pid': True, 'address': '0xabc'}, {'pid': -1, 'address': '0xabc'},

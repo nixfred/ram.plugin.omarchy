@@ -101,6 +101,19 @@ def window_for(pid, procs, windows):
         pid = procs.get(pid, {}).get('ppid', 0)
     return None
 
+def owned_socket(path):
+    # Herdr/TMUX socket paths come from the target process's own environment,
+    # so they are attacker-influenced. Only a path that is currently a socket
+    # owned by this user is usable; anything else degrades to plain window
+    # focus rather than failing the click.
+    try:
+        info = os.stat(path)
+    except (OSError, ValueError, TypeError):
+        return ''
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+        return ''
+    return path
+
 def related(a, b, procs):
     # A window title is attacker-reproducible: any same-user client can set
     # its title to match. A focus target the process tree cannot relate to
@@ -136,30 +149,32 @@ def target_for(p, procs, wins, query=None):
             kin = [c for c in match if isinstance(c.get('pid'), int) and related(p['pid'], c['pid'], procs)]
             w = kin[0] if kin else match[0]
     if not shell and env.get('HERDR_ENV') == '1' and env.get('HERDR_PANE_ID'):
-        sock = env.get('HERDR_SOCKET_PATH') or str(Path.home() / '.config/herdr/herdr.sock')
-        for q in procs.values():
-            if q['name'] != 'herdr':
-                continue
-            cw = window_for(q['pid'], procs, windows)
-            ce = environment(q['pid'])
-            cs = ce.get('HERDR_SOCKET_PATH') or str(Path.home() / '.config/herdr/herdr.sock')
-            if cw and cs == sock:
-                w = cw
-                host = {'kind': 'herdr', 'socket': sock, 'workspace': env.get('HERDR_WORKSPACE_ID', ''), 'tab': env.get('HERDR_TAB_ID', ''), 'pane': env['HERDR_PANE_ID']}
-                break
-    if not shell and not host and env.get('TMUX') and re.fullmatch(r'%\d+', env.get('TMUX_PANE', '')):
-        sock = env['TMUX'].rsplit(',', 2)[0]
-        pane = env['TMUX_PANE']
-        # Attach only to a client already displaying this pane's session.
-        session = query(['tmux', '-S', sock, 'display-message', '-p', '-t', pane, '#{session_id}']).strip()
-        for line in (query(['tmux', '-S', sock, 'list-clients', '-F', '#{client_pid}\t#{session_id}\t#{client_name}']) if session else '').splitlines():
-            parts = line.split('\t')
-            if len(parts) == 3 and parts[0].isdigit() and parts[1] == session:
-                cw = window_for(int(parts[0]), procs, windows)
-                if cw:
+        sock = owned_socket(env.get('HERDR_SOCKET_PATH') or str(Path.home() / '.config/herdr/herdr.sock'))
+        if sock:
+            for q in procs.values():
+                if q['name'] != 'herdr':
+                    continue
+                cw = window_for(q['pid'], procs, windows)
+                ce = environment(q['pid'])
+                cs = ce.get('HERDR_SOCKET_PATH') or str(Path.home() / '.config/herdr/herdr.sock')
+                if cw and cs == sock:
                     w = cw
-                    host = {'kind': 'tmux', 'socket': sock, 'pane': pane, 'client': parts[2]}
+                    host = {'kind': 'herdr', 'socket': sock, 'workspace': env.get('HERDR_WORKSPACE_ID', ''), 'tab': env.get('HERDR_TAB_ID', ''), 'pane': env['HERDR_PANE_ID']}
                     break
+    if not shell and not host and env.get('TMUX') and re.fullmatch(r'%\d+', env.get('TMUX_PANE', '')):
+        sock = owned_socket(env['TMUX'].rsplit(',', 2)[0])
+        if sock:
+            pane = env['TMUX_PANE']
+            # Attach only to a client already displaying this pane's session.
+            session = query(['tmux', '-S', sock, 'display-message', '-p', '-t', pane, '#{session_id}']).strip()
+            for line in (query(['tmux', '-S', sock, 'list-clients', '-F', '#{client_pid}\t#{session_id}\t#{client_name}']) if session else '').splitlines():
+                parts = line.split('\t')
+                if len(parts) == 3 and parts[0].isdigit() and parts[1] == session:
+                    cw = window_for(int(parts[0]), procs, windows)
+                    if cw:
+                        w = cw
+                        host = {'kind': 'tmux', 'socket': sock, 'pane': pane, 'client': parts[2]}
+                        break
     return {'address': w['address'], 'title': str(w.get('title', ''))[:100], 'workspace': str(w.get('workspace', {}).get('name', '')), 'host': host} if w else {}
 
 def scanned(p):
@@ -513,6 +528,10 @@ def focus(pid, start):
     if not target:
         raise RuntimeError('No existing window or attached session for this process.')
     host = target.get('host', {})
+    # The socket was valid when the scan read it; re-check at use. A stale
+    # or replaced path degrades to plain window focus, not a failed click.
+    if host.get('socket') and not owned_socket(host['socket']):
+        host = {}
     if host.get('kind') == 'herdr':
         for kind, pattern in [('workspace', r'w[\w-]{1,32}'), ('tab', r'w[\w-]{1,32}:t[\w-]{1,32}'), ('pane', r'w[\w-]{1,32}:p[\w-]{1,32}')]:
             value = host.get(kind, '')
