@@ -3,6 +3,21 @@
 // theme's own red / yellow / green.
 const fs=require('fs'),vm=require('vm'),{test}=require('node:test'),assert=require('assert/strict');
 const ctx={Qt:{rgba:(r,g,b,a)=>[r,g,b,a]}};
+
+// Themes ship in two places: the user's own and the ones Omarchy installs.
+// Checking only the first misses more than half of them, including the theme
+// that was active when the muted-ramp problem was found.
+function installedThemes(){
+  const out=[];
+  for(const dir of [process.env.HOME+'/.config/omarchy/themes','/usr/share/omarchy/themes']){
+    if(!fs.existsSync(dir)) continue;
+    for(const name of fs.readdirSync(dir)){
+      const file=dir+'/'+name+'/colors.toml';
+      if(fs.existsSync(file)) out.push([name,fs.readFileSync(file,'utf8')]);
+    }
+  }
+  return out;
+}
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('Model.js','utf8').replace('.pragma library',''),ctx);
 
 const panel=fs.readFileSync('Panel.qml','utf8');
@@ -60,17 +75,64 @@ test('the shipped ramp is still the ramp when no theme is readable',()=>{
     assert.deepEqual(ctx.ramp(pct).slice(0,3).map(v=>Math.round(v*255)),rgb);
 });
 
-test('every installed theme that defines the three keys parses to three colours',()=>{
-  // Guards the parser against the real files rather than a synthetic one.
-  const dir=process.env.HOME+'/.config/omarchy/themes';
-  if(!fs.existsSync(dir)) return;
-  let checked=0;
-  for(const name of fs.readdirSync(dir)){
-    const file=dir+'/'+name+'/colors.toml';
-    if(!fs.existsSync(file)) continue;
-    const parsed=ctx.themeRamp(fs.readFileSync(file,'utf8'));
-    for(const stop of ['low','mid','high']) assert.match(parsed[stop],/^#[0-9a-fA-F]{6}$/,name+' '+stop);
-    checked++;
+// The floor is 0.55, but a stop is rounded to 8 bits per channel on its way
+// back to a hex string, which can land a hair under. Assert against the floor
+// less one quantisation step rather than loosening the floor itself.
+const READABLE=0.54;
+
+// Saturation of an "#rrggbb", 0..1, for asserting a ramp can still be read.
+function saturation(hex){
+  const [r,g,b]=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255);
+  const mx=Math.max(r,g,b),mn=Math.min(r,g,b),l=(mx+mn)/2;
+  if(mx===mn) return 0;
+  return l>0.5?(mx-mn)/(2-mx-mn):(mx-mn)/(mx+mn);
+}
+
+test('a muted theme is lifted to a ramp that can still warn',()=>{
+  // 2-haxorz sits at 0.23 / 0.13 / 0.11 saturation: dusty rose, olive and grey
+  // teal. Read verbatim it produced a chip that could no longer warn at all.
+  const r=ctx.themeRamp('red = "#b9968f"\nyellow = "#7b8768"\ngreen = "#708c8b"');
+  assert.deepEqual({...r},{low:'#d68372',mid:'#86b936',high:'#39c383'});
+  for(const stop of [r.low,r.mid,r.high]) assert.ok(saturation(stop)>=READABLE,stop);
+});
+
+test('a ramp that is already vivid is left alone',()=>{
+  // Only what must move, moves: ethereal's red and yellow are untouched and
+  // just its sage green lifts.
+  const r=ctx.themeRamp('red = "#ED5B5A"\nyellow = "#E9BB4F"\ngreen = "#92a593"');
+  assert.equal(r.low,'#ed5b5a');
+  assert.equal(r.mid,'#e9bb4f');
+  assert.notEqual(r.high,'#92a593');
+});
+
+test('a greyscale theme borrows the shipped hues rather than tinting at random',()=>{
+  // vantablack and white define all three stops as pure grey, so there is no
+  // hue to preserve.
+  const r=ctx.themeRamp('red = "#8a8a8a"\nyellow = "#a0a0a0"\ngreen = "#b4b4b4"');
+  assert.deepEqual({...r},{low:'#ca4a68',mid:'#d4bf6c',high:'#79d8ac'});
+});
+
+test('the shipped ramp is never put through the floor',()=>{
+  // #850d29 is a deliberate dark crimson; the floor would lighten it.
+  assert.deepEqual({...ctx.themeRamp('')},{...ctx.RAMP_FALLBACK});
+});
+
+test('no installed theme yields a ramp that cannot warn',()=>{
+  const themes=installedThemes();
+  for(const [name,raw] of themes){
+    const r=ctx.themeRamp(raw);
+    for(const [stop,hex] of Object.entries(r))
+      assert.ok(saturation(hex)>=READABLE,name+' '+stop+' is '+hex+' at saturation '+saturation(hex).toFixed(2));
   }
-  assert.ok(checked>0,'no installed theme was checked');
+  assert.ok(themes.length>0,'no installed theme was checked');
+});
+
+test('every installed theme parses to three colours',()=>{
+  // Guards the parser against the real files rather than a synthetic one.
+  const themes=installedThemes();
+  for(const [name,raw] of themes){
+    const parsed=ctx.themeRamp(raw);
+    for(const stop of ['low','mid','high']) assert.match(parsed[stop],/^#[0-9a-fA-F]{6}$/,name+' '+stop);
+  }
+  assert.ok(themes.length>0,'no installed theme was checked');
 });

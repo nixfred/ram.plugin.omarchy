@@ -54,9 +54,11 @@ Every colour is the active Omarchy theme's. Chrome comes from the shell's own po
 
 The headroom ramp is the exception that proves the rule. It is the one colour on screen carrying meaning rather than style, so it stays a traffic light — but in the theme's own red, yellow and green, read from the theme's `colors.toml`. A theme that omits one of those keys keeps the shipped colour for that stop alone, not a whole foreign ramp.
 
+Roughly half of the themes on a typical machine define those three too muted to warn with: `2-haxorz` sets them at 0.23, 0.13 and 0.11 saturation, and `vantablack` and `white` make all three pure greyscale. Read verbatim, those produce a chip that cannot tell you anything. So each stop keeps its theme hue and is raised only as far as it must be to stay tellable apart, with lightness pulled into a band. A stop with almost no chroma has no hue worth preserving and borrows the shipped one instead. Themes whose ramps are already vivid are left untouched. The shipped colours are deliberate and never go through the floor.
+
 The shell reads `colors.toml` once at startup and is pushed later palettes over IPC, so a file watcher alone would strand the ramp on the previous theme. The panel re-reads the palette whenever the shell's own colours move, which is exactly when that push lands: switching themes retints the chip, the graph and the panel without a shell restart.
 
-`tests/test_theming.cjs` fails the build if a hardcoded colour reappears in `Panel.qml`, and checks the parser against every theme installed on the machine.
+`tests/test_theming.cjs` fails the build if a hardcoded colour reappears in `Panel.qml`, and asserts that every one of the 40 themes installed on the machine, user and system alike, still yields a ramp that can warn.
 
 ## Accounting
 
