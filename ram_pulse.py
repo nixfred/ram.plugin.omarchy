@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import socket
 import sqlite3
 import stat
@@ -594,6 +595,35 @@ def focus(pid, start):
         raise RuntimeError('Window focus failed; the window may have closed.')
     return {'message': 'Focused '+p['name']}
 
+def own_ancestry():
+    # Every pid between this helper and pid 1. The panel launches it, so this
+    # chain contains the shell drawing the window the click came from: a
+    # terminate that walked up it would take the bar down with the row.
+    chain, pid = set(), os.getpid()
+    while pid > 1 and pid not in chain:
+        chain.add(pid)
+        pid = (process(pid) or {}).get('ppid', 0)
+    return chain
+
+def terminate(pid, start):
+    # SIGTERM to one process the reader picked, never a group and never a
+    # signal the process cannot handle. Identity is re-read here exactly as
+    # focus() does it, because a row is up to nine seconds old and a recycled
+    # pid would be somebody else by now.
+    if pid is None or pid <= 1:
+        raise RuntimeError('Refusing to signal that process.')
+    if pid in own_ancestry():
+        raise RuntimeError('That process is running this panel. Close it from its own window.')
+    p = process(pid)
+    if not p or p['start'] != start or Path(f'/proc/{pid}').stat().st_uid != os.getuid():
+        raise RuntimeError('Process exited or identity changed. Refresh the list.')
+    # os.kill can only reach a process this user owns; the check above is the
+    # guard against a recycled pid, not against privilege.
+    os.kill(pid, signal.SIGTERM)
+    # Report what was asked for, not that it worked: a process is free to
+    # ignore SIGTERM, and nothing here escalates if it does.
+    return {'message': 'Asked ' + p['name'] + ' to quit. It decides whether to.'}
+
 def flush():
     # sync is data-safe, unprivileged, and never discards a page. It can block
     # behind storage I/O; the UI runs this in a separate asynchronous process.
@@ -613,7 +643,7 @@ def flush():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['daemon', 'snapshot', 'focus', 'flush'])
+    parser.add_argument('action', choices=['daemon', 'snapshot', 'focus', 'flush', 'terminate'])
     parser.add_argument('pid', nargs='?', type=int)
     parser.add_argument('start', nargs='?')
     args = parser.parse_args()
@@ -626,7 +656,9 @@ def main():
         if args.action == 'snapshot':
             value = {k: v for k, v in metrics().items() if k != 'vm'}
         else:
-            value = focus(args.pid, args.start) if args.action == 'focus' else flush()
+            value = (focus(args.pid, args.start) if args.action == 'focus'
+                     else terminate(args.pid, args.start) if args.action == 'terminate'
+                     else flush())
         print(json.dumps(value))
     except Exception as e:
         print(json.dumps({'error': str(e)}))

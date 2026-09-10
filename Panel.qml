@@ -74,9 +74,16 @@ Panel {
     readonly property bool grouped: setting('groupByApp',true) !== false
     readonly property bool showReadout: setting('showReadout',true) !== false
     readonly property var listing: grouped ? groups : rows
+    // The row awaiting a quit confirmation. Never a group: a group row is a
+    // whole app, and a browser's is twenty-odd processes. Cleared on anything
+    // that could move the row out from under the confirmation.
+    property var pendingKill: null
     readonly property var tabs: ['Overview', 'RAM hoarders', 'Memory lab', 'About']
     readonly property int lastTab: tabs.length - 1
     // Telemetry can shorten the list under a reader who is already paging.
+    onPageChanged: pendingKill=null
+    onTabChanged: pendingKill=null
+    onGroupedChanged: pendingKill=null
     onListingChanged: page=Model.clampPage(page, listing.length, Model.PAGE_SIZE)
     readonly property var chart: histories[String(range)] || {points:[],seconds:range,now:now,bucket:15,count:0,peak:0}
     readonly property string health: stale ? 'WAITING FOR TELEMETRY' : pressure >= 10 ? 'MEMORY IS STALLING' : mem.availablePct < 20 ? 'LOW HEADROOM' : 'ROOM TO BREATHE'
@@ -86,13 +93,19 @@ Panel {
         root.settings=Object.assign({}, root.settings, {groupByApp:!!value})
         if(root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName,root.settings)
     }
+    // A confirmation is only good for the row it was raised on.
+    function armKill(row) { root.pendingKill = root.grouped ? null : row }
+    function isPending(row) {
+        return root.pendingKill && row && root.pendingKill.pid === row.pid && root.pendingKill.start === row.start
+    }
     function setMode(value) {
         root.settings=Object.assign({}, root.settings, {displayMode:Model.clamp(value,0,3)})
         if(root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName,root.settings)
     }
     function runAction(action, row) {
         if(actionProc.running) return
-        actionStatus=action==='flush'?'Writing pending data to disk…':'Finding the existing window…'
+        root.pendingKill=null
+        actionStatus=action==='flush'?'Writing pending data to disk…':action==='terminate'?'Asking '+row.name+' to quit…':'Finding the existing window…'
         actionProc.command=['python3',helper,action].concat(row?[String(row.pid),String(row.start)]:[])
         actionProc.running=true
     }
@@ -105,9 +118,9 @@ Panel {
         Quickshell.execDetached(['xdg-open',url])
     }
     function status() {
-        return JSON.stringify({opened:opened,version:pluginVersion,mode:mode,readout:Model.readout(mem,mode),tint:String(tint),stale:stale,samples:chart.count || 0,tab:tab,chooseMode:chooseMode,total:mem.total,available:mem.available,hoarders:rows.length,groups:groups.length,grouped:grouped,action:actionStatus})
+        return JSON.stringify({opened:opened,pendingKill:pendingKill?pendingKill.pid:0,version:pluginVersion,mode:mode,readout:Model.readout(mem,mode),tint:String(tint),stale:stale,samples:chart.count || 0,tab:tab,chooseMode:chooseMode,total:mem.total,available:mem.available,hoarders:rows.length,groups:groups.length,grouped:grouped,action:actionStatus})
     }
-    onOpenedChanged: if(opened) { snapshotFile.reload(); historyFile.reload() }
+    onOpenedChanged: { pendingKill=null; if(opened) { snapshotFile.reload(); historyFile.reload() } }
     FileView {
         id:snapshotFile; path:root.stateDir+'/snapshot.json'; watchChanges:true; printErrors:false
         onFileChanged:reload()
@@ -332,6 +345,28 @@ Panel {
                                 Label{text:Model.kindOf(procRow.modelData)+'  ·  swap '+Model.size(procRow.modelData.swap);font.pixelSize:10;anchors.right:parent.right}
                             }
                             Label{anchors.right:parent.right;anchors.rightMargin:13;y:22;text:procRow.modelData.target.address?'↗':'ⓘ';color:root.tint;font.pixelSize:16}
+                            // Flat process rows only. A group row is an app, not
+                            // a process, so there is nothing here to signal.
+                            Action{
+                                visible:!root.grouped && !root.isPending(procRow.modelData) && hoarderMouse.containsMouse
+                                z:1
+                                anchors.right:parent.right;anchors.rightMargin:34;anchors.verticalCenter:parent.verticalCenter
+                                text:'Quit';implicitWidth:56;implicitHeight:26
+                                onClicked:root.armKill(procRow.modelData)
+                            }
+                            // Naming the process is the point of the step: the
+                            // row is up to nine seconds old, so the reader gets
+                            // to see which pid they are about to signal.
+                            Rectangle{
+                                visible:root.isPending(procRow.modelData)
+                                z:1
+                                anchors.fill:parent;radius:10;color:root.surfaceHover;border.color:root.rampWarn
+                                Row{anchors.centerIn:parent;spacing:10
+                                    Label{text:'Quit '+procRow.modelData.name+'  ·  PID '+procRow.modelData.pid+'?';color:root.themeText;font.pixelSize:12;anchors.verticalCenter:parent.verticalCenter}
+                                    Action{text:'Quit';accent:root.rampWarn;implicitWidth:64;implicitHeight:26;onClicked:root.runAction('terminate',procRow.modelData)}
+                                    Action{text:'Cancel';implicitWidth:72;implicitHeight:26;onClicked:root.pendingKill=null}
+                                }
+                            }
                             MouseArea{id:hoarderMouse;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
                                 onClicked: {if(procRow.modelData.target.address)root.runAction('focus',procRow.modelData);else root.actionStatus=procRow.modelData.name+' · '+(procRow.modelData.count>1?procRow.modelData.count+' processes':'PID '+procRow.modelData.pid)+' · proportional RAM '+(procRow.modelData.pss===null||procRow.modelData.pss===undefined?'unavailable, a member could not be read':Model.size(procRow.modelData.pss))+'. No existing window to focus.'}
                             }
@@ -377,7 +412,7 @@ Panel {
                             Action{text:actionProc.running?'Working…':'Flush pending writes';accent:root.rampGood;onClicked:root.runAction('flush')}
                         }
                     }
-                    Label{width:parent.width;wrapMode:Text.WordWrap;text:'Readouts overlap and are not a pie chart. No process termination, cache purge, swap reset or privileged tuning is exposed.';font.pixelSize:10}
+                    Label{width:parent.width;wrapMode:Text.WordWrap;text:'Readouts overlap and are not a pie chart. Quit sends SIGTERM to one process from a By process row, after asking. No cache purge, swap reset or privileged tuning is exposed.';font.pixelSize:10}
                 }
                 Column {
                     width:parent.width;spacing:12;visible:root.tab===root.lastTab;height:visible?implicitHeight:0
