@@ -303,6 +303,27 @@ class MemoryTests(unittest.TestCase):
             sync.assert_called_once()
             with self.assertRaises(RuntimeError):ram.flush()
 
+    def test_snapshot_contract_is_presentation_only(self):
+        m = ram.metrics()
+        self.assertEqual(set(m['details']), {'AnonPages', 'Shmem', 'Slab', 'PageTables', 'Unevictable', 'Committed_AS'})
+        self.assertNotIn('oom_kill', m['vm'])
+        for s in m['swaps']:
+            self.assertEqual(set(s), {'name', 'total', 'used', 'priority'})
+        self.assertEqual(set(m['zram']), {'original', 'physical'})
+        pub = {k: v for k, v in m.items() if k != 'vm'}
+        self.assertNotIn('vm', pub)
+
+    def test_public_rows_and_targets_drop_routing_internals(self):
+        t = {'address': '0xabc', 'title': 'term', 'workspace': '1',
+             'host': {'kind': 'herdr', 'socket': '/s', 'workspace': 'w1', 'tab': 'w1:t1', 'pane': 'w1:p1'}}
+        self.assertEqual(ram.public_target(t), {'address': '0xabc', 'title': 'term', 'workspace': '1',
+                                                'host': {'kind': 'herdr', 'pane': 'w1:p1'}})
+        r = ram.public_row({'pid': 1, 'start': 's', 'name': 'n', 'rss': 1, 'swap': 0, 'pss': 1,
+                            'owned': True, 'ppid': 5, 'count': 2, 'names': ['a'], 'target': t})
+        self.assertNotIn('owned', r)
+        self.assertNotIn('ppid', r)
+        self.assertNotIn('socket', str(r))
+
     def test_unknown_action_rejected(self):
         import subprocess
         p=subprocess.run(['python3',str(Path(ram.__file__)),'kill'],capture_output=True)

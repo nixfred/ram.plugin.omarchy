@@ -177,6 +177,20 @@ def target_for(p, procs, wins, query=None):
                         break
     return {'address': w['address'], 'title': str(w.get('title', ''))[:100], 'workspace': str(w.get('workspace', {}).get('name', '')), 'host': host} if w else {}
 
+def public_target(t):
+    # Snapshot holds display state; focus() re-resolves routing fresh.
+    if not t or not t.get('address'):
+        return {}
+    h = t.get('host', {})
+    host = {'kind': h.get('kind', ''), 'pane': h.get('pane', '')} if h.get('kind') in ('herdr', 'tmux') else {}
+    return {'address': t.get('address', ''), 'title': t.get('title', ''), 'workspace': t.get('workspace', ''), 'host': host}
+
+def public_row(r):
+    o = {'pid': r['pid'], 'start': r['start'], 'name': r['name'], 'rss': r['rss'], 'swap': r['swap'], 'pss': r['pss'], 'target': public_target(r.get('target', {}))}
+    if 'count' in r:
+        o.update(count=r['count'], names=list(r.get('names', []))[:3])
+    return o
+
 def scanned(p):
     # Processes come and go while the scan runs. One that exited between its
     # status and its smaps read is not a hoarder and must not cost its group a
@@ -214,6 +228,9 @@ def group_of(p, procs, windows):
 # clipboard watchers and every helper launched without its own scope; calling
 # that one app, named after whichever member is largest, would be a lie.
 SESSION_PROGRAMS = 5
+
+# History ranges served to the panel; keep in sync with Model.js RANGES.
+HISTORY_RANGES = (3600, 86400, 604800)
 
 def families(live, procs, windows):
     groups = {}
@@ -279,7 +296,7 @@ def hoarders():
         p['target'] = target(p)
     for g in groups:
         g['target'] = target(procs[g['pid']])
-    return rows, groups
+    return [public_row(p) for p in rows], [public_row(g) for g in groups]
 
 def metrics(previous=None):
     m = fields(read('/proc/meminfo'))
@@ -294,7 +311,7 @@ def metrics(previous=None):
     vm = {}
     for line in read('/proc/vmstat').splitlines():
         k, v = line.split()
-        if k in ('pswpin', 'pswpout', 'pgmajfault', 'oom_kill'):
+        if k in ('pswpin', 'pswpout', 'pgmajfault'):
             vm[k] = int(v)
     ts = time.time()
     elapsed = ts - previous['ts'] if previous else 0
@@ -303,20 +320,20 @@ def metrics(previous=None):
     for line in read('/proc/swaps').splitlines()[1:]:
         s = line.split()
         if len(s) >= 5:
-            swaps.append({'name': s[0], 'type': 'zram' if s[0].startswith('/dev/zram') else s[1], 'total': int(s[2])*1024, 'used': int(s[3])*1024, 'priority': int(s[4])})
-    zram = {'original': 0, 'compressed': 0, 'physical': 0}
+            swaps.append({'name': s[0], 'total': int(s[2])*1024, 'used': int(s[3])*1024, 'priority': int(s[4])})
+    zram = {'original': 0, 'physical': 0}
     for f in Path('/sys/block').glob('zram*/mm_stat'):
         v = read(f).split()
         if len(v) >= 3:
-            for k, value in zip(zram, v):
-                zram[k] += int(value)
+            zram['original'] += int(v[0])
+            zram['physical'] += int(v[2])
     return {'ts': ts, 'total': total, 'available': available, 'used': total-available,
             'availablePct': available/total*100, 'usedPct': (total-available)/total*100,
             'free': m.get('MemFree', 0), 'cache': max(0, m.get('Cached', 0)+m.get('SReclaimable', 0)+m.get('Buffers', 0)-m.get('Shmem', 0)),
             'dirty': m.get('Dirty', 0), 'writeback': m.get('Writeback', 0),
             'swapTotal': m.get('SwapTotal', 0), 'swapUsed': m.get('SwapTotal', 0)-m.get('SwapFree', 0),
             'psi': psi, 'rates': rates, 'vm': vm, 'swaps': swaps, 'zram': zram,
-            'pageSize': os.sysconf('SC_PAGE_SIZE'), 'details': m}
+            'pageSize': os.sysconf('SC_PAGE_SIZE'), 'details': {k: m.get(k, 0) for k in ('AnonPages', 'Shmem', 'Slab', 'PageTables', 'Unevictable', 'Committed_AS')}}
 
 # State files fall into two classes, and a symlink means a different thing to
 # each. Replaced files are written with tempfile.mkstemp and Path.replace():
@@ -408,8 +425,14 @@ def db_open():
         db.close()
         raise
 
+_BOOT_ID = ''
+
 def record(db, m):
-    db.execute('INSERT OR REPLACE INTO samples VALUES (?,?,?,?,?,?)', (m['ts'], m['usedPct'], 100*m['swapUsed']/m['swapTotal'] if m['swapTotal'] else 0, m['psi'].get('some', {}).get('avg10', 0), m['total'], read('/proc/sys/kernel/random/boot_id').strip()))
+    global _BOOT_ID
+    boot = _BOOT_ID or read('/proc/sys/kernel/random/boot_id').strip()
+    if boot:
+        _BOOT_ID = boot
+    db.execute('INSERT OR REPLACE INTO samples (ts,used,swap,psi,total,boot) VALUES (?,?,?,?,?,?)', (m['ts'], m['usedPct'], 100*m['swapUsed']/m['swapTotal'] if m['swapTotal'] else 0, m['psi'].get('some', {}).get('avg10', 0), m['total'], boot))
     db.execute('DELETE FROM samples WHERE ts < ?', (m['ts']-7*86400,))
     db.commit()
 
@@ -488,7 +511,7 @@ def daemon():
                             if db is None:
                                 db = db_open()
                             record(db, m)
-                            atomic('history.json', {str(s): history(db, s, m['ts']) for s in (3600, 86400, 604800)})
+                            atomic('history.json', {str(s): history(db, s, m['ts']) for s in HISTORY_RANGES})
                             errors.pop('history', None)
                         except (OSError, sqlite3.Error, RuntimeError, ValueError) as e:
                             errors['history'] = str(e)
@@ -508,7 +531,7 @@ def daemon():
                     m['hoarders'] = rows
                     m['groups'] = groups
                     m['collectorErrors'] = dict(errors)
-                    atomic('snapshot.json', m)
+                    atomic('snapshot.json', {k: v for k, v in m.items() if k != 'vm'})
                     previous = m
                 except (OSError, sqlite3.Error, RuntimeError, ValueError) as e:
                     print(f'RAM Pulse: {type(e).__name__}: {e}', flush=True)
@@ -600,7 +623,10 @@ def main():
             daemon()
             return
         prepare_state()
-        value = metrics() if args.action == 'snapshot' else focus(args.pid, args.start) if args.action == 'focus' else flush()
+        if args.action == 'snapshot':
+            value = {k: v for k, v in metrics().items() if k != 'vm'}
+        else:
+            value = focus(args.pid, args.start) if args.action == 'focus' else flush()
         print(json.dumps(value))
     except Exception as e:
         print(json.dumps({'error': str(e)}))
