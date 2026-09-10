@@ -11,7 +11,7 @@ import tempfile
 
 PLUGIN_ID = 'nixfred.ram-pulse'
 FILES = ('manifest.json', 'Panel.qml', 'Model.js', 'MemoryChip.qml',
-         'HistoryGraph.qml', 'ram_pulse.py', 'README.md')
+         'HistoryGraph.qml', 'ram_pulse.py')
 
 
 def atomic_write(path, payload, mode):
@@ -34,20 +34,19 @@ def update_layout(raw):
     layout = bar.get('layout') if isinstance(bar, dict) else None
     if not isinstance(layout, dict):
         raise ValueError('shell.json must contain an object at bar.layout.')
+    found = False
     for section in ('left', 'center', 'right'):
         entries = layout.get(section)
         if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
             raise ValueError('bar.layout.' + section + ' must be an array of entry objects.')
-    found = False
-    for section in ('left', 'center', 'right'):
-        entries = []
-        for entry in layout[section]:
+        cleaned = []
+        for entry in entries:
             if entry.get('id') == PLUGIN_ID:
                 if found:
                     continue
                 found = True
-            entries.append(entry)
-        layout[section] = entries
+            cleaned.append(entry)
+        layout[section] = cleaned
     if not found:
         layout['right'].append({'id': PLUGIN_ID, 'displayMode': 0, 'animated': True})
     return (json.dumps(data, indent=2) + '\n').encode('utf-8')

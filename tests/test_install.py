@@ -4,7 +4,6 @@ import io
 import json
 import os
 from pathlib import Path
-import re
 import runpy
 import shutil
 import stat
@@ -29,7 +28,7 @@ class InstallerTests(unittest.TestCase):
             source.mkdir()
             shutil.copy2(ROOT / 'install.py', source / 'install.py')
             for name in ('manifest.json', 'Panel.qml', 'Model.js', 'MemoryChip.qml',
-                         'HistoryGraph.qml', 'ram_pulse.py', 'README.md', 'ram-pulse.service'):
+                         'HistoryGraph.qml', 'ram_pulse.py', 'ram-pulse.service'):
                 if name != missing:
                     (source / name).write_text('new fixture: ' + name)
             config = home / '.config/omarchy/shell.json'
@@ -181,18 +180,11 @@ class AboutIdentityTests(unittest.TestCase):
         for url in (self.manifest['repository'], self.manifest['homepage']):
             self.assertIn("'" + url + "'", self.panel)
 
-    def test_about_is_a_tab_and_both_tab_clamps_agree_with_the_strip(self):
-        # Adding a tab means three edits: the strip, the arrow-key bound and the
-        # showTab clamp. Missing either bound leaves the new tab reachable only
-        # by mouse, which is exactly how the About tab would rot unnoticed.
-        strip = re.search(r"Repeater \{model:\[([^\]]+)\]", self.panel)
-        self.assertIsNotNone(strip, 'could not find the tab strip in Panel.qml')
-        tabs = re.findall(r"'([^']+)'", strip.group(1))
-        self.assertIn('About', tabs)
-        last = len(tabs) - 1
-        self.assertIn('root.tab=Math.min(%d,root.tab+1)' % last, self.panel)
-        self.assertIn('Model.clamp(value,0,%d)' % last, self.panel)
-        self.assertIn('root.tab===%d' % last, self.panel)
+    def test_tabs_have_one_source_of_truth(self):
+        self.assertIn("readonly property var tabs:", self.panel)
+        self.assertIn("'About'", self.panel)
+        self.assertIn('Model.clamp(value,0,root.lastTab)', self.panel)
+        self.assertIn('Math.min(root.lastTab,root.tab+1)', self.panel)
 
     def test_about_tab_offers_both_addresses(self):
         # The tab must open the manifest's URLs, not a second set of literals.
@@ -202,6 +194,7 @@ class AboutIdentityTests(unittest.TestCase):
     def test_the_manifest_ships_with_the_plugin(self):
         import install
         self.assertIn('manifest.json', install.FILES)
+        self.assertNotIn('README.md', install.FILES)
 
 
 if __name__ == '__main__':
