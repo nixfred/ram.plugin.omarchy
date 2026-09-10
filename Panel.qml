@@ -37,11 +37,23 @@ Panel {
     readonly property string helper: String(Qt.resolvedUrl('ram_pulse.py')).replace(/^file:\/\//,'')
     // Identity for the About line. The manifest is the single source of truth
     // for all three, so bumping a version or moving the repo is one edit there.
-    // The constants are the fallback for when the registry is not reachable.
-    readonly property var pluginManifest: {
+    // The registry stays the first choice where the shell exposes it; on
+    // hosts where the per-plugin facade carries no registry view the lookup
+    // below yields null and the installed copy beside this file fills in.
+    // The constants are the last resort for when neither is readable.
+    readonly property var registryManifest: {
         var reg = bar && bar.shell ? bar.shell.pluginRegistry : null
         return reg && reg.installedPlugins ? (reg.installedPlugins[root.moduleName] || null) : null
     }
+    property var fileManifest: null
+    FileView {
+        id:manifestFile
+        path:String(Qt.resolvedUrl('manifest.json')).replace(/^file:\/\//,'')
+        watchChanges:true; printErrors:false
+        onFileChanged:reload()
+        onLoaded:{try{var m=JSON.parse(text());if(m && m.id)root.fileManifest=m}catch(e){}}
+    }
+    readonly property var pluginManifest: root.registryManifest || root.fileManifest
     readonly property string pluginVersion: pluginManifest && pluginManifest.version ? String(pluginManifest.version) : ''
     readonly property string repoUrl: pluginManifest && pluginManifest.repository ? String(pluginManifest.repository) : 'https://github.com/nixfred/ram.plugin.omarchy'
     readonly property string homeUrl: pluginManifest && pluginManifest.homepage ? String(pluginManifest.homepage) : 'https://nixfred.com'
