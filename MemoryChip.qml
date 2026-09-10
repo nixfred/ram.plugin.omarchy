@@ -16,11 +16,8 @@ Item {
     implicitHeight: compact ? 25 : 160
     // One phase revolution every 5.8s, advanced by the repaint tick itself.
     readonly property real phaseStep: tick.interval / 5800
-    // Every repaint is coalesced onto this single 10Hz tick, and nothing is
-    // painted while the chip is off screen. An infinite NumberAnimation on
-    // phase drove the canvas at display refresh rate instead, and the level
-    // and tint Behaviors kept doing the same through every transition even
-    // when animation was switched off.
+    // Painting is coalesced onto one 10Hz tick and stops while invisible.
+    // Do not drive phase from an animation: it repaints at display rate.
     Timer {
         id: tick
         interval: 100; repeat: true
