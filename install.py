@@ -77,6 +77,10 @@ def symlinked_ancestors(*paths):
 
 
 def main():
+    # Private by default: directories this installer creates (plugin copy,
+    # unit directory, backup parents) inherit this mask. Payload file modes
+    # are set explicitly by atomic_write and are unaffected.
+    os.umask(0o077)
     source = Path(__file__).resolve().parent
     home = Path.home()
     config = home / '.config/omarchy/shell.json'
