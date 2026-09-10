@@ -1,9 +1,7 @@
 .pragma library
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, Number(v) || 0)) }
-// The headroom ramp is the one colour on screen that carries meaning rather
-// than style, so it stays a traffic light — but in the active theme's own red,
-// yellow and green. These constants are the ramp the plugin shipped with, and
-// they stand in for any key a theme leaves out.
+// Headroom ramp carries meaning, so it stays a traffic light in the theme's
+// own red, yellow and green. Fallbacks stand in for missing keys.
 var RAMP_FALLBACK = {low: '#850d29', mid: '#efcc45', high: '#43f2a1'}
 
 function rgbOf(hex, fallback) {
@@ -49,29 +47,21 @@ function hslToRgb(h, s, l) {
     return [stop(h + 1/3), stop(h), stop(h - 1/3)]
 }
 
-// Half the themes on a typical box define a red, yellow and green too muted to
-// work as a warning: 2-haxorz's three stops sit at 0.23, 0.13 and 0.11
-// saturation, and vantablack's are pure greyscale. The ramp keeps each theme's
-// hue and raises only what it must to stay tellable apart at a glance. A stop
-// with almost no chroma has no hue worth preserving, so the shipped hue stands
-// in rather than tinting grey at random.
+// Near-achromatic stops borrow the shipped hue; lifted stops need minimum
+// saturation, lightness bounds and separation to stay tellable apart.
 var RAMP_MIN_SAT = 0.55
 var RAMP_MIN_LIGHT = 0.30
 var RAMP_MAX_LIGHT = 0.78
 var RAMP_HUE_FLOOR = 0.02
 
-// Themes name their palette either directly or as terminal colour slots. The
-// named key wins where a theme defines both, so it leads each list.
+// Named keys win over terminal slots where both exist.
 var PALETTE_ALIASES = {red: ['red', 'color1'], yellow: ['yellow', 'color3'],
                        green: ['green', 'color2']}
 
-// How far apart the three stops must sit, as a weighted RGB distance, before
-// the theme's own colours are used. Measured after lifting, never before.
+// Minimum weighted RGB distance between stops, measured after lifting.
 var RAMP_SEPARATION_MIN = 80
 
-// Weighted RGB distance ("redmean"), a cheap stand-in for a perceptual metric.
-// Accurate enough to tell three distinct hues from three shades of one mud,
-// which is the only judgement the ramp needs it to make.
+// Cheap redmean distance: enough to tell three hues from one mud.
 function separation(a, b) {
     var mean = (a[0] + b[0]) / 2, dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2]
     return Math.sqrt((2 + mean / 256) * dr * dr + 4 * dg * dg + (2 + (255 - mean) / 256) * db * db)
@@ -89,10 +79,8 @@ function readableStop(themeHex, shippedHex) {
     return hexOf(hslToRgb(hue, sat, light))
 }
 
-// colors.toml is the theme's own palette file. Only the three keys the ramp
-// needs are read; a theme that omits one keeps the shipped colour for that
-// stop rather than falling back to a whole foreign ramp. The shipped colours
-// are deliberate and are never put through the floor.
+// Only the three ramp keys are read. Partial palettes and indistinguishable
+// triples fall back as a set, never mixed.
 function themeRamp(text) {
     var found = {}, lines = String(text || '').split('\n')
     for (var i = 0; i < lines.length; i++) {
@@ -110,11 +98,7 @@ function themeRamp(text) {
         if (picked === null) { complete = false; continue }
         out[slot] = readableStop(picked, RAMP_FALLBACK[slot])
     }
-    // A partial palette is not a palette: mixing two theme stops with one
-    // shipped one produces a ramp neither designed.
     if (!complete) return {low: RAMP_FALLBACK.low, mid: RAMP_FALLBACK.mid, high: RAMP_FALLBACK.high}
-    // Three stops that are really one colour cannot be pulled apart by any
-    // amount of saturation, so the shipped ramp stands in for the whole set.
     var low = rgbOf(out.low, null), mid = rgbOf(out.mid, null), high = rgbOf(out.high, null)
     if (separation(low, mid) < RAMP_SEPARATION_MIN || separation(mid, high) < RAMP_SEPARATION_MIN)
         return {low: RAMP_FALLBACK.low, mid: RAMP_FALLBACK.mid, high: RAMP_FALLBACK.high}
@@ -149,3 +133,28 @@ function pct(v) { return (Number(v)||0).toFixed(1)+'%' }
 // XDG requires an absolute path; a relative one would resolve against
 // whichever working directory the recorder and the panel each happen to have.
 function stateDir(home, xdg) { return (xdg && xdg.charAt(0) === '/' ? xdg : home+'/.local/state')+'/ram-pulse' }
+// Single sources for list paging and history ranges; QML passes them explicitly.
+var PAGE_SIZE = 8
+var RANGES = [{text: '1 hour', seconds: 3600}, {text: '24 hours', seconds: 86400}, {text: '7 days', seconds: 604800}]
+function validRange(v) { for (var i = 0; i < RANGES.length; i++) if (RANGES[i].seconds === v) return true; return false }
+// Group totals are PSS and may be added; incomplete groups fall back to RSS.
+function totalOf(row) { return row && row.count >= 1 && row.pss !== null && row.pss !== undefined ? row.pss : row.rss }
+function kindOf(row) { return row && row.count >= 1 && row.pss !== null && row.pss !== undefined ? 'proportional' : 'resident' }
+function pageCount(count, pageSize) { return Math.max(1, Math.ceil((Number(count) || 0) / pageSize)) }
+function clampPage(page, count, pageSize) { return Math.min(Math.max(0, Number(page) || 0), pageCount(count, pageSize) - 1) }
+function targetLabel(row) {
+    if (!row) return ''
+    var t = row.target
+    if (t && t.address) {
+        var prefix = t.host && t.host.kind === 'herdr' ? 'Herdr ' + (t.host.pane || '') + ' · ' : t.host && t.host.kind === 'tmux' ? 'tmux ' + (t.host.pane || '') + ' · ' : ''
+        return prefix + (t.title || '')
+    }
+    if (row.count > 1) return (row.names || []).join(', ') + ' · no attached window'
+    return 'Background process · no attached window'
+}
+function recorderStatus(actionStatus, stale, hasErrors, timeText) {
+    if (actionStatus) return actionStatus
+    if (stale) return 'Telemetry is offline. Check the ram-pulse user service.'
+    if (hasErrors) return 'Live memory is available; recorder details are degraded. Check the ram-pulse user service.'
+    return 'LIVE · updated ' + timeText + '  ·  History stays on this machine  ·  Esc closes'
+}
