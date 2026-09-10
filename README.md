@@ -40,9 +40,7 @@ for t in tests/*.cjs; do node "$t"; done
 omarchy plugin validate .
 ```
 
-The **About** tab carries the running version, the source repository and nixfred.com, alongside the recorder's state: whether `ram-pulse.service` is up, how much history is retained, how many samples back the range on screen, and the state directory the data lives in. Both addresses open in your browser and close the panel first, so the page never lands behind the popup the same click dismissed.
-
-Every other tab carries the same three facts as one dim caption line at the foot of the panel, so you never have to leave what you are reading to learn which build you are looking at. The version comes from the installed `manifest.json` through the shell's plugin registry, so it is the build actually running rather than one written into the QML.
+The **About** tab carries the running version, the source repository and nixfred.com, alongside the recorder's state: whether `ram-pulse.service` is up, how much history is retained, how many samples back the range on screen, and the state directory the data lives in. Both addresses open in your browser and close the panel first, so the page never lands behind the popup the same click dismissed. The version comes from the installed `manifest.json` through the shell's plugin registry, so it is the build actually running rather than one written into the QML.
 
 Left/right arrows move through the four dashboard tabs. Escape closes. Keys 1–4 select modes in the right-click picker. Inline bar setting `animated: false` disables chip animations; `groupByApp: false` opens RAM hoarders as a flat process list; `showReadout: false` hides the numeric readout beside the chip, leaving the color-coded glyph only — useful on crowded bars where horizontal space is tight and the chip's red → yellow → green tint is enough. Defaults to showing the readout. Chip and graph repaints are coalesced onto a 10Hz tick and stop entirely while off screen.
 
@@ -54,15 +52,9 @@ Every colour is the active Omarchy theme's. Chrome comes from the shell's own po
 
 The headroom ramp is the exception that proves the rule. It is the one colour on screen carrying meaning rather than style, so it stays a traffic light — but in the theme's own red, yellow and green, read from the theme's `colors.toml`. A theme that omits one of those keys keeps the shipped colour for that stop alone, not a whole foreign ramp.
 
-The keys are read by name or from the `color1` / `color2` / `color3` terminal slots, so a theme that names no red still has one. Roughly half of the themes on a typical machine define those three too muted to warn with: `2-haxorz` sets them at 0.23, 0.13 and 0.11 saturation, and `vantablack` and `white` make all three pure greyscale. Read verbatim, those produce a chip that cannot tell you anything.
+The keys are read by name or from the `color1` / `color2` / `color3` terminal slots. Each stop keeps the theme hue and is lifted only as far as needed for readability; near-achromatic stops borrow the shipped hue, and partial or indistinguishable palettes fall back as a set.
 
-So each stop keeps the hue the theme chose and is raised only as far as it must be, with a deliberately wide lightness band that rescues a stop too dark or too pale to see without second-guessing a theme that picked a bright red on purpose. Stops already above the floor pass through untouched. Only a stop at genuinely zero chroma has no hue to preserve and borrows the shipped one: across the 40 installed themes only `vantablack` and `white` score exactly 0.000, and the next lowest is 0.041, so the hue floor sits just above zero. A higher floor silently rotates a faint but real hue onto the shipped one.
-
-The three are then measured against each other as a weighted RGB distance. Lifting first matters, because a palette can be the right three hues at the wrong three saturations. What still fails is genuinely one colour rather than three, and falls back as a whole set rather than mixing theme stops with shipped ones: `blue-red-4k-warm`'s yellow `#e99b8c` and green `#ea9b8c` differ by a single step of red. Of the 40 themes installed here, 36 use their own palette and 4 keep the shipped ramp. The shipped colours are deliberate and never go through the floor.
-
-The shell reads `colors.toml` once at startup and is pushed later palettes over IPC, so a file watcher alone would strand the ramp on the previous theme. The panel re-reads the palette whenever the shell's own colours move, which is exactly when that push lands: switching themes retints the chip, the graph and the panel without a shell restart.
-
-`tests/test_theming.cjs` fails the build if a hardcoded colour reappears in `Panel.qml`, and asserts that every one of the 40 themes installed on the machine, user and system alike, still yields a ramp that can warn.
+The shell reads `colors.toml` once at startup and is pushed later palettes over IPC, so the panel re-reads the palette whenever the shell's own colours move: switching themes retints without a shell restart.
 
 ## Accounting
 
