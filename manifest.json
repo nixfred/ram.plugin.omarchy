@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "nixfred.ram-pulse",
   "name": "RAM Pulse",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "author": "Fred Nix",
   "license": "MIT",
   "description": "A living memory chip: continuous history, RAM pressure, swap and zram insight, and focus-only RAM hoarders.",

@@ -56,9 +56,26 @@ function hslToRgb(h, s, l) {
 // with almost no chroma has no hue worth preserving, so the shipped hue stands
 // in rather than tinting grey at random.
 var RAMP_MIN_SAT = 0.55
-var RAMP_MIN_LIGHT = 0.42
-var RAMP_MAX_LIGHT = 0.66
-var RAMP_HUE_FLOOR = 0.12
+var RAMP_MIN_LIGHT = 0.30
+var RAMP_MAX_LIGHT = 0.78
+var RAMP_HUE_FLOOR = 0.02
+
+// Themes name their palette either directly or as terminal colour slots. The
+// named key wins where a theme defines both, so it leads each list.
+var PALETTE_ALIASES = {red: ['red', 'color1'], yellow: ['yellow', 'color3'],
+                       green: ['green', 'color2']}
+
+// How far apart the three stops must sit, as a weighted RGB distance, before
+// the theme's own colours are used. Measured after lifting, never before.
+var RAMP_SEPARATION_MIN = 80
+
+// Weighted RGB distance ("redmean"), a cheap stand-in for a perceptual metric.
+// Accurate enough to tell three distinct hues from three shades of one mud,
+// which is the only judgement the ramp needs it to make.
+function separation(a, b) {
+    var mean = (a[0] + b[0]) / 2, dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2]
+    return Math.sqrt((2 + mean / 256) * dr * dr + 4 * dg * dg + (2 + (255 - mean) / 256) * db * db)
+}
 
 function readableStop(themeHex, shippedHex) {
     var t = rgbOf(themeHex, null)
@@ -77,16 +94,30 @@ function readableStop(themeHex, shippedHex) {
 // stop rather than falling back to a whole foreign ramp. The shipped colours
 // are deliberate and are never put through the floor.
 function themeRamp(text) {
-    var out = {low: RAMP_FALLBACK.low, mid: RAMP_FALLBACK.mid, high: RAMP_FALLBACK.high}
-    var keys = {red: 'low', yellow: 'mid', green: 'high'}
-    var lines = String(text || '').split('\n')
+    var found = {}, lines = String(text || '').split('\n')
     for (var i = 0; i < lines.length; i++) {
         var m = /^\s*([A-Za-z0-9_]+)\s*=\s*["']?(#[0-9A-Fa-f]{6})/.exec(lines[i])
-        if (m && keys[m[1]] && rgbOf(m[2], null)) {
-            var slot = keys[m[1]]
-            out[slot] = readableStop(m[2], RAMP_FALLBACK[slot])
-        }
+        if (m) found[m[1].toLowerCase()] = m[2]
     }
+    var slots = {red: 'low', yellow: 'mid', green: 'high'}
+    var out = {low: RAMP_FALLBACK.low, mid: RAMP_FALLBACK.mid, high: RAMP_FALLBACK.high}
+    var complete = true
+    for (var role in slots) {
+        var slot = slots[role], keys = PALETTE_ALIASES[role], picked = null
+        for (var k = 0; k < keys.length; k++) {
+            if (found[keys[k]] && rgbOf(found[keys[k]], null)) { picked = found[keys[k]]; break }
+        }
+        if (picked === null) { complete = false; continue }
+        out[slot] = readableStop(picked, RAMP_FALLBACK[slot])
+    }
+    // A partial palette is not a palette: mixing two theme stops with one
+    // shipped one produces a ramp neither designed.
+    if (!complete) return {low: RAMP_FALLBACK.low, mid: RAMP_FALLBACK.mid, high: RAMP_FALLBACK.high}
+    // Three stops that are really one colour cannot be pulled apart by any
+    // amount of saturation, so the shipped ramp stands in for the whole set.
+    var low = rgbOf(out.low, null), mid = rgbOf(out.mid, null), high = rgbOf(out.high, null)
+    if (separation(low, mid) < RAMP_SEPARATION_MIN || separation(mid, high) < RAMP_SEPARATION_MIN)
+        return {low: RAMP_FALLBACK.low, mid: RAMP_FALLBACK.mid, high: RAMP_FALLBACK.high}
     return out
 }
 
