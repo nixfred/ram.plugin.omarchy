@@ -101,6 +101,21 @@ def window_for(pid, procs, windows):
         pid = procs.get(pid, {}).get('ppid', 0)
     return None
 
+def related(a, b, procs):
+    # A window title is attacker-reproducible: any same-user client can set
+    # its title to match. A focus target the process tree cannot relate to
+    # the target process is title-only evidence. Either direction counts, so
+    # a terminal emulator above the shell and a helper below it both bind.
+    for start, goal in ((a, b), (b, a)):
+        seen = set()
+        pid = start
+        while isinstance(pid, int) and pid > 1 and pid not in seen:
+            if pid == goal:
+                return True
+            seen.add(pid)
+            pid = procs.get(pid, {}).get('ppid', 0)
+    return False
+
 def target_for(p, procs, wins, query=None):
     query = run if query is None else query
     windows = {c['pid']: c for c in wins}
@@ -109,11 +124,17 @@ def target_for(p, procs, wins, query=None):
     host = {}
     # Boomux terminal titles carry an exact shell id. Focusing that existing
     # window needs no launcher and cannot create or terminate a session.
+    # Titles alone do not bind a window to a shell -- any same-user client
+    # can set its title -- so a candidate whose window process the tree
+    # relates to the target wins over one that merely matches the title. The
+    # title-only fallback stays for multiplexer layouts where the window and
+    # the shell share no ancestry, where no better binding is available.
     shell = env.get('BOOMUX_SHELL_ID', '')
-    if shell:
+    if shell and re.fullmatch(r'\S{1,64}', shell):
         match = [c for c in wins if str(c.get('title', '')).startswith('boomux:shell:') and str(c.get('title', '')).split(' ')[0].endswith(':' + shell)]
         if match:
-            w = match[0]
+            kin = [c for c in match if isinstance(c.get('pid'), int) and related(p['pid'], c['pid'], procs)]
+            w = kin[0] if kin else match[0]
     if not shell and env.get('HERDR_ENV') == '1' and env.get('HERDR_PANE_ID'):
         sock = env.get('HERDR_SOCKET_PATH') or str(Path.home() / '.config/herdr/herdr.sock')
         for q in procs.values():

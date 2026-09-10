@@ -163,6 +163,44 @@ class MemoryTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):ram.focus(100,'old')
             run.assert_not_called()
 
+    def _boomux_target(self, pid, shell, wins, procs):
+        env = {'BOOMUX_SHELL_ID': shell} if shell else {}
+        with patch.object(ram, 'environment', return_value=env):
+            return ram.target_for({'pid': pid}, procs, wins)
+
+    def _boomux_win(self, pid, address):
+        return {'pid': pid, 'address': address, 'title': 'boomux:shell:s1'}
+
+    def test_boomux_prefers_the_window_related_to_the_target(self):
+        # The spoof: an unrelated window listed first with a matching title.
+        # window_for resolves nothing here, so the title match decides -- and
+        # must decide for the window the process tree binds to the target.
+        procs = {50: {'pid': 50, 'ppid': 100},
+                 100: {'pid': 100, 'ppid': 1}, 200: {'pid': 200, 'ppid': 1}}
+        wins = [self._boomux_win(200, '0xevil'), self._boomux_win(100, '0xgood')]
+        self.assertEqual(self._boomux_target(50, 's1', wins, procs)['address'], '0xgood')
+
+    def test_boomux_falls_back_to_a_title_match_without_shared_ancestry(self):
+        # Multiplexer layouts where the window and the shell share no
+        # ancestry keep working on the title alone: no better binding exists.
+        procs = {50: {'pid': 50, 'ppid': 1}, 200: {'pid': 200, 'ppid': 1}}
+        wins = [self._boomux_win(200, '0xonly')]
+        self.assertEqual(self._boomux_target(50, 's1', wins, procs)['address'], '0xonly')
+
+    def test_boomux_ignores_a_degenerate_shell_id(self):
+        procs = {50: {'pid': 50, 'ppid': 1}, 200: {'pid': 200, 'ppid': 1}}
+        wins = [self._boomux_win(200, '0xevil')]
+        for shell in ('', 'has space', 'x' * 65):
+            self.assertEqual(self._boomux_target(50, shell, wins, procs), {})
+
+    def test_related_needs_a_tree_binding_not_a_shared_init(self):
+        self.assertTrue(ram.related(50, 100, {50: {'ppid': 100}, 100: {'ppid': 1}}))
+        self.assertTrue(ram.related(100, 50, {50: {'ppid': 100}, 100: {'ppid': 1}}))
+        # Both under init is not a binding: init is everyone's ancestor.
+        self.assertFalse(ram.related(50, 200, {50: {'ppid': 1}, 200: {'ppid': 1}}))
+        # Cycles terminate.
+        self.assertFalse(ram.related(5, 9, {5: {'ppid': 6}, 6: {'ppid': 5}}))
+
     def test_history_retention_peak_and_boot_gaps(self):
         with tempfile.TemporaryDirectory() as d,patch.object(ram,'STATE',Path(d)):
             db=ram.db_open()
